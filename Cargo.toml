@@ -1,0 +1,15 @@
+[package]
+name = "nirushot"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+description = "NIRU screenshot capture helper"
+
+[dependencies]
+chrono = "0.4"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
