@@ -24,12 +24,17 @@ Default interaction:
 - `y`: copy the current image without saving
 - `Esc`: close without keeping a file
 
-The review window is a normal managed X11 window. It does not impose a theme on
-the desktop; the capture comes from the current pixels and the overlays use the
-suite's restrained red accent. Closing with `Esc` removes the temporary capture.
+The review window is a normal managed X11 window with a themed toolbar and
+typography from NIRUWM: Niru Noir, Nord, Satie and Carl Larsson palettes are
+honoured, including the configured monospace font. The capture pixels are
+unchanged; crop, rectangle, arrow and mask are applied only when you save or copy.
+Closing with `Esc` removes the temporary capture.
 
 `--copy` and `--save PATH` skip the review window. `--review` forces it.
 `--delay SECONDS` waits before capture. `--no-notify` suppresses the notification.
+Saved screenshots use a NIRU notification with Open, Copy and Show in folder
+actions when the installed `notify-send` supports actions; otherwise a plain
+notification is shown. No notification service is started by nirushot.
 
 ## Runtime
 

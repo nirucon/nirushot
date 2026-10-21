@@ -26,13 +26,240 @@ fn active_window() -> Result<String, String> {
     Ok(id.to_string())
 }
 
-fn notify(path: &str) {
-    let _ = Command::new("notify-send")
-        .args(["-a", "NIRUSHOT", "-t", "6000", "Screenshot", path])
-        .status();
+use ab_glyph::{point, Font, FontArc, PxScale, ScaleFont};
+use image::{Rgba, RgbaImage};
+
+fn notify(path: &str, copied: bool) {
+    let exe = env::current_exe().unwrap_or_else(|_| PathBuf::from("nirushot"));
+    let mut command = Command::new(exe);
+    command.arg("--notify-result").arg(path);
+    if copied {
+        command.arg("--copied");
+    }
+    let _ = command.spawn();
 }
 
-use image::{Rgba, RgbaImage};
+fn notify_and_handle(path: &Path, copied: bool) {
+    let text = path.to_string_lossy().to_string();
+    let support = Command::new("notify-send")
+        .arg("--help")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("--action"))
+        .unwrap_or(false);
+    if support {
+        let body = if copied {
+            "Saved and copied to the clipboard"
+        } else {
+            "Saved to Pictures"
+        };
+        let output = Command::new("notify-send")
+            .args([
+                "-a",
+                "NIRUSHOT",
+                "-t",
+                "10000",
+                "-A",
+                "open=Open",
+                "-A",
+                "copy=Copy",
+                "-A",
+                "folder=Show in folder",
+                "Screenshot",
+                body,
+                &text,
+            ])
+            .output();
+        let action = output
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        match action.as_str() {
+            "open" => {
+                let _ = Command::new("xdg-open").arg(path).spawn();
+            }
+            "copy" => {
+                let _ = copy_to_clipboard(path);
+            }
+            "folder" => {
+                if let Some(parent) = path.parent() {
+                    let _ = Command::new("xdg-open").arg(parent).spawn();
+                }
+            }
+            _ => {}
+        }
+    } else {
+        let body = if copied {
+            "Saved and copied to the clipboard"
+        } else {
+            "Saved to Pictures"
+        };
+        let _ = Command::new("notify-send")
+            .args(["-a", "NIRUSHOT", "-t", "6000", "Screenshot", body, &text])
+            .status();
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Theme {
+    background: u32,
+    surface: u32,
+    foreground: u32,
+    muted: u32,
+    border: u32,
+    accent: u32,
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Self {
+            background: 0x0f0f10,
+            surface: 0x161618,
+            foreground: 0xe5e5e5,
+            muted: 0xa8a8a8,
+            border: 0x2a2a2d,
+            accent: 0x5a5a60,
+        }
+    }
+}
+
+fn config_dir() -> PathBuf {
+    env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env::var_os("HOME").unwrap_or_default()).join(".config"))
+}
+
+fn config_value(key: &str) -> Option<String> {
+    let text = std::fs::read_to_string(config_dir().join("niruwm/config.toml")).ok()?;
+    text.lines().find_map(|line| {
+        let line = line.trim();
+        let (name, value) = line.split_once('=')?;
+        if name.trim() != key {
+            return None;
+        }
+        Some(value.trim().trim_matches('"').to_string())
+    })
+}
+
+fn load_theme() -> Theme {
+    let name = config_value("theme").unwrap_or_else(|| "niru-noir".into());
+    let mut theme = Theme::default();
+    match name.as_str() {
+        "niru-nord" => {
+            theme.background = 0x2e3440;
+            theme.foreground = 0xeceff4;
+            theme.muted = 0x9aa5b1;
+            theme.border = 0x3b4252;
+            theme.accent = 0x88c0d0;
+        }
+        "niru-satie" => {
+            theme.background = 0x141414;
+            theme.foreground = 0xdedad4;
+            theme.muted = 0x8f8b86;
+            theme.border = 0x2a2724;
+            theme.accent = 0xb08d7d;
+        }
+        "niru-carl-larsson" => {
+            theme.background = 0xf3ece0;
+            theme.foreground = 0x3b3228;
+            theme.muted = 0x7d6f5f;
+            theme.border = 0xd8cdbb;
+            theme.accent = 0xa63d2f;
+        }
+        _ => {}
+    }
+    theme.surface = blend_colour(theme.background, theme.foreground, 0.08);
+    theme
+}
+
+fn blend_colour(a: u32, b: u32, amount: f32) -> u32 {
+    let channel = |shift: u32| {
+        let x = ((a >> shift) & 0xff) as f32;
+        let y = ((b >> shift) & 0xff) as f32;
+        ((x + (y - x) * amount).round() as u32) << shift
+    };
+    channel(16) | channel(8) | channel(0)
+}
+
+fn rgb(value: u32) -> Rgba<u8> {
+    Rgba([
+        ((value >> 16) & 0xff) as u8,
+        ((value >> 8) & 0xff) as u8,
+        (value & 0xff) as u8,
+        255,
+    ])
+}
+
+fn load_font() -> Option<FontArc> {
+    let candidates = [
+        config_value("font_path"),
+        Command::new("fc-match")
+            .args(["-f", "%{file}", "monospace"])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty()),
+        Some("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf".into()),
+        Some("/usr/share/fonts/TTF/DejaVuSansMono.ttf".into()),
+        Some("/usr/share/fonts/dejavu/DejaVuSansMono.ttf".into()),
+        Some("/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf".into()),
+    ];
+    candidates.into_iter().flatten().find_map(|path| {
+        std::fs::read(path)
+            .ok()
+            .and_then(|data| FontArc::try_from_vec(data).ok())
+    })
+}
+
+fn text_width(font: &FontArc, size: f32, text: &str) -> f32 {
+    let scaled = font.as_scaled(PxScale::from(size));
+    text.chars()
+        .map(|ch| scaled.h_advance(font.glyph_id(ch)))
+        .sum()
+}
+
+fn draw_text(
+    image: &mut RgbaImage,
+    font: &FontArc,
+    size: f32,
+    x: f32,
+    y: f32,
+    text: &str,
+    colour: Rgba<u8>,
+) {
+    let scale = PxScale::from(size);
+    let scaled = font.as_scaled(scale);
+    let baseline = y + scaled.ascent();
+    let mut caret = x;
+    for ch in text.chars() {
+        let id = font.glyph_id(ch);
+        let glyph = id.with_scale_and_position(scale, point(caret, baseline));
+        if let Some(outline) = font.outline_glyph(glyph) {
+            let bounds = outline.px_bounds();
+            outline.draw(|gx, gy, coverage| {
+                let px = bounds.min.x as i32 + gx as i32;
+                let py = bounds.min.y as i32 + gy as i32;
+                if px < 0 || py < 0 || px as u32 >= image.width() || py as u32 >= image.height() {
+                    return;
+                }
+                let dst = image.get_pixel_mut(px as u32, py as u32);
+                let alpha = coverage;
+                for i in 0..3 {
+                    dst[i] =
+                        (colour[i] as f32 * alpha + dst[i] as f32 * (1.0 - alpha)).round() as u8;
+                }
+            });
+        }
+        caret += scaled.h_advance(id);
+    }
+}
+
+fn fill_rect(image: &mut RgbaImage, x: i32, y: i32, w: i32, h: i32, colour: Rgba<u8>) {
+    for yy in y.max(0)..(y + h).min(image.height() as i32) {
+        for xx in x.max(0)..(x + w).min(image.width() as i32) {
+            image.put_pixel(xx as u32, yy as u32, colour);
+        }
+    }
+}
 use x11rb::{
     connection::Connection,
     protocol::{xproto::*, Event},
@@ -40,25 +267,12 @@ use x11rb::{
     wrapper::ConnectionExt as _,
 };
 
-const TITLE: &str =
-    "NIRUSHOT — c crop · r rectangle · a arrow · m mask · s save · y copy · Esc close";
-
 fn key_name(c: &RustConnection, code: u8) -> u32 {
     c.get_keyboard_mapping(code, 1)
         .ok()
         .and_then(|r| r.reply().ok())
         .and_then(|m| m.keysyms.first().copied())
         .unwrap_or(0)
-}
-
-fn set_title(c: &RustConnection, win: Window, text: &str) {
-    let _ = c.change_property8(
-        PropMode::REPLACE,
-        win,
-        AtomEnum::WM_NAME,
-        AtomEnum::STRING,
-        text.as_bytes(),
-    );
 }
 
 fn to_x_bytes(c: &RustConnection, img: &RgbaImage) -> Vec<u8> {
@@ -142,8 +356,23 @@ fn line(img: &mut RgbaImage, mut x0: i32, mut y0: i32, x1: i32, y1: i32, colour:
     }
 }
 
-fn scale_to(img: &RgbaImage, w: u32, h: u32) -> RgbaImage {
-    image::imageops::resize(img, w, h, image::imageops::FilterType::Triangle)
+const TOOLBAR: u32 = 52;
+
+fn toolbar_mode(font: &FontArc, x: i32) -> Option<u8> {
+    let mut pos = 118.0;
+    for (key, label) in [
+        (b'c', "Crop"),
+        (b'r', "Rect"),
+        (b'a', "Arrow"),
+        (b'm', "Mask"),
+    ] {
+        let width = 28.0 + text_width(font, 12.0, label);
+        if (x as f32) >= pos && (x as f32) < pos + width {
+            return Some(key);
+        }
+        pos += width + 8.0;
+    }
+    None
 }
 
 fn review(mut image: RgbaImage, temp: &Path, notify_enabled: bool) -> Result<(), String> {
@@ -151,25 +380,27 @@ fn review(mut image: RgbaImage, temp: &Path, notify_enabled: bool) -> Result<(),
     let root = c.setup().roots[screen].root;
     let sw = c.setup().roots[screen].width_in_pixels as u32;
     let sh = c.setup().roots[screen].height_in_pixels as u32;
-    let max_w = (sw as f32 * 0.9).max(320.0) as u32;
-    let max_h = (sh as f32 * 0.85).max(240.0) as u32;
-    let scale = (max_w as f32 / image.width() as f32)
-        .min(max_h as f32 / image.height() as f32)
+    let max_w = (sw as f32 * 0.90).max(320.0);
+    let max_h = (sh as f32 * 0.84 - TOOLBAR as f32).max(200.0);
+    let initial = (max_w / image.width() as f32)
+        .min(max_h / image.height() as f32)
         .min(1.0);
-    let win_w = (image.width() as f32 * scale).max(1.0) as u16;
-    let win_h = (image.height() as f32 * scale).max(1.0) as u16;
+    let win_w = ((image.width() as f32 * initial) as u32)
+        .max(760)
+        .min(sw.saturating_sub(24));
+    let win_h = TOOLBAR + (image.height() as f32 * initial).max(1.0) as u32;
     let win = c.generate_id().map_err(|e| e.to_string())?;
     let gc = c.generate_id().map_err(|e| e.to_string())?;
-    let x = ((sw as i16 - win_w as i16) / 2).max(0);
-    let y = ((sh as i16 - win_h as i16) / 2).max(0);
+    let x = ((sw as i32 - win_w as i32) / 2).max(0) as i16;
+    let y = ((sh as i32 - win_h as i32) / 2).max(0) as i16;
     c.create_window(
         0,
         win,
         root,
         x,
         y,
-        win_w,
-        win_h,
+        win_w as u16,
+        win_h as u16,
         0,
         WindowClass::INPUT_OUTPUT,
         0,
@@ -181,72 +412,171 @@ fn review(mut image: RgbaImage, temp: &Path, notify_enabled: bool) -> Result<(),
                     | EventMask::BUTTON_RELEASE
                     | EventMask::POINTER_MOTION
                     | EventMask::KEY_PRESS
-                    | EventMask::STRUCTURE_NOTIFY,
+                    | EventMask::STRUCTURE_NOTIFY
+                    | EventMask::FOCUS_CHANGE,
             ),
     )
     .map_err(|e| e.to_string())?;
     c.create_gc(gc, win, &CreateGCAux::new())
         .map_err(|e| e.to_string())?;
-    set_title(&c, win, TITLE);
+    c.change_property8(
+        PropMode::REPLACE,
+        win,
+        AtomEnum::WM_NAME,
+        AtomEnum::STRING,
+        b"NIRUSHOT \xe2\x80\x94 screenshot review",
+    )
+    .ok();
+    c.change_property8(
+        PropMode::REPLACE,
+        win,
+        AtomEnum::WM_CLASS,
+        AtomEnum::STRING,
+        b"nirushot\0Nirushot\0",
+    )
+    .ok();
     c.map_window(win).map_err(|e| e.to_string())?;
-    c.set_input_focus(InputFocus::POINTER_ROOT, win, x11rb::CURRENT_TIME)
-        .ok();
     c.flush().map_err(|e| e.to_string())?;
+    let theme = load_theme();
+    let font = load_font();
     let mut mode = b'0';
     let mut start: Option<(i32, i32)> = None;
     let mut current: Option<(i32, i32)> = None;
     loop {
-        let mut base = scale_to(&image, win_w as u32, win_h as u32);
+        let mut canvas = RgbaImage::from_pixel(win_w, win_h, rgb(theme.background));
+        fill_rect(
+            &mut canvas,
+            0,
+            0,
+            win_w as i32,
+            TOOLBAR as i32,
+            rgb(theme.surface),
+        );
+        fill_rect(&mut canvas, 0, 0, win_w as i32, 2, rgb(theme.accent));
+        fill_rect(
+            &mut canvas,
+            0,
+            TOOLBAR as i32 - 1,
+            win_w as i32,
+            1,
+            rgb(theme.border),
+        );
+        if let Some(font) = &font {
+            draw_text(
+                &mut canvas,
+                font,
+                14.0,
+                16.0,
+                10.0,
+                "NIRUSHOT",
+                rgb(theme.foreground),
+            );
+            let mut pos = 118.0;
+            for (key, label) in [
+                (b'c', "Crop"),
+                (b'r', "Rect"),
+                (b'a', "Arrow"),
+                (b'm', "Mask"),
+            ] {
+                let width = 28.0 + text_width(font, 12.0, label);
+                let active = mode == key;
+                if active {
+                    fill_rect(
+                        &mut canvas,
+                        pos as i32,
+                        13,
+                        width as i32,
+                        26,
+                        rgb(theme.accent),
+                    );
+                }
+                let colour = if active {
+                    rgb(theme.background)
+                } else {
+                    rgb(theme.muted)
+                };
+                draw_text(&mut canvas, font, 12.0, pos + 9.0, 20.0, label, colour);
+                pos += width + 8.0;
+            }
+            let hints = "s Save   y Copy   Esc Close";
+            let hint_width = text_width(font, 12.0, hints);
+            draw_text(
+                &mut canvas,
+                font,
+                12.0,
+                win_w as f32 - hint_width - 16.0,
+                20.0,
+                hints,
+                rgb(theme.muted),
+            );
+        }
+        let avail_w = win_w as f32;
+        let avail_h = (win_h - TOOLBAR) as f32;
+        let view_scale = (avail_w / image.width() as f32)
+            .min(avail_h / image.height() as f32)
+            .min(2.0);
+        let disp_w = (image.width() as f32 * view_scale).max(1.0) as u32;
+        let disp_h = (image.height() as f32 * view_scale).max(1.0) as u32;
+        let image_x = ((win_w as f32 - disp_w as f32) / 2.0).max(0.0);
+        let image_y = TOOLBAR as f32 + ((avail_h - disp_h as f32) / 2.0).max(0.0);
+        let display = if disp_w == image.width() && disp_h == image.height() {
+            image.clone()
+        } else {
+            image::imageops::resize(
+                &image,
+                disp_w,
+                disp_h,
+                image::imageops::FilterType::Lanczos3,
+            )
+        };
+        image::imageops::overlay(&mut canvas, &display, image_x as i64, image_y as i64);
         if let (Some((x0, y0)), Some((x1, y1))) = (start, current) {
-            let ix0 = (x0 as f32 / scale) as i32;
-            let iy0 = (y0 as f32 / scale) as i32;
-            let ix1 = (x1 as f32 / scale) as i32;
-            let iy1 = (y1 as f32 / scale) as i32;
-            let sx = (x0 as f32 * scale / scale) as i32;
-            let sy0 = (y0 as f32 * scale / scale) as i32;
-            let sx1 = (x1 as f32 * scale / scale) as i32;
-            let sy1 = (y1 as f32 * scale / scale) as i32;
+            let left = x0.min(x1);
+            let top = y0.min(y1);
+            let width = (x1 - x0).abs();
+            let height = (y1 - y0).abs();
             match mode {
                 b'r' => draw_rect(
-                    &mut base,
-                    sx.min(sx1),
-                    sy0.min(sy1),
-                    (sx1 - sx).abs(),
-                    (sy1 - sy0).abs(),
-                    Rgba([230, 90, 90, 255]),
+                    &mut canvas,
+                    left,
+                    top,
+                    width,
+                    height,
+                    Rgba([220, 70, 70, 255]),
                 ),
-                b'm' => {
-                    for yy in sy0.min(sy1)..sy0.max(sy1) {
-                        for xx in sx.min(sx1)..sx.max(sx1) {
-                            if xx >= 0
-                                && yy >= 0
-                                && (xx as u32) < win_w as u32
-                                && (yy as u32) < win_h as u32
-                            {
-                                base.put_pixel(xx as u32, yy as u32, Rgba([0, 0, 0, 255]));
-                            }
-                        }
-                    }
-                }
-                b'a' => line(&mut base, sx, sy0, sx1, sy1, Rgba([230, 90, 90, 255])),
-                _ => draw_rect(
-                    &mut base,
-                    sx.min(sx1),
-                    sy0.min(sy1),
-                    (sx1 - sx).abs(),
-                    (sy1 - sy0).abs(),
+                b'm' => fill_rect(&mut canvas, left, top, width, height, Rgba([0, 0, 0, 255])),
+                b'a' => line(&mut canvas, x0, y0, x1, y1, Rgba([220, 70, 70, 255])),
+                b'c' => draw_rect(
+                    &mut canvas,
+                    left,
+                    top,
+                    width,
+                    height,
                     Rgba([220, 200, 140, 255]),
                 ),
+                _ => {}
             }
-            let _ = (ix0, iy0, ix1, iy1);
         }
-        put_image(&c, win, gc, &base)?;
+        put_image(&c, win, gc, &canvas)?;
         let event = c.wait_for_event().map_err(|e| e.to_string())?;
         match event {
             Event::Expose(e) if e.window == win => {
-                put_image(&c, win, gc, &base)?;
+                put_image(&c, win, gc, &canvas)?;
+            }
+            Event::MapNotify(e) if e.window == win => {
+                let _ = c.set_input_focus(InputFocus::PARENT, win, x11rb::CURRENT_TIME);
+                c.flush().ok();
             }
             Event::ButtonPress(e) if e.event == win && e.detail == 1 => {
+                let _ = c.set_input_focus(InputFocus::PARENT, win, x11rb::CURRENT_TIME);
+                if e.event_y < TOOLBAR as i16 {
+                    if let Some(font) = &font {
+                        if let Some(selected) = toolbar_mode(font, e.event_x as i32) {
+                            mode = selected;
+                        }
+                    }
+                    continue;
+                }
                 start = Some((e.event_x as i32, e.event_y as i32));
                 current = start;
             }
@@ -255,48 +585,47 @@ fn review(mut image: RgbaImage, temp: &Path, notify_enabled: bool) -> Result<(),
             }
             Event::ButtonRelease(e) if e.event == win && e.detail == 1 => {
                 if let (Some((x0, y0)), Some((x1, y1))) = (start.take(), current) {
-                    let x = ((x0.min(x1) as f32) / scale).max(0.0) as u32;
-                    let y = ((y0.min(y1) as f32) / scale).max(0.0) as u32;
-                    let w = ((x0 - x1).abs() as f32 / scale) as u32;
-                    let h = ((y0 - y1).abs() as f32 / scale) as u32;
-                    if w > 2 && h > 2 {
-                        let x = x.min(image.width().saturating_sub(1));
-                        let y = y.min(image.height().saturating_sub(1));
-                        let w = w.min(image.width() - x);
-                        let h = h.min(image.height() - y);
+                    let to_image = |x: i32, y: i32| {
+                        let ix = ((x as f32 - image_x) / view_scale).round() as i32;
+                        let iy = ((y as f32 - image_y) / view_scale).round() as i32;
+                        (
+                            ix.clamp(0, image.width() as i32),
+                            iy.clamp(0, image.height() as i32),
+                        )
+                    };
+                    let (ix0, iy0) = to_image(x0, y0);
+                    let (ix1, iy1) = to_image(x1, y1);
+                    let left = ix0.min(ix1) as u32;
+                    let top = iy0.min(iy1) as u32;
+                    let width = (ix1 - ix0).unsigned_abs();
+                    let height = (iy1 - iy0).unsigned_abs();
+                    if width > 2 && height > 2 {
+                        let width = width.min(image.width() - left);
+                        let height = height.min(image.height() - top);
                         match mode {
                             b'c' => {
-                                image = image::imageops::crop_imm(&image, x, y, w, h).to_image()
+                                image = image::imageops::crop_imm(&image, left, top, width, height)
+                                    .to_image()
                             }
                             b'r' => draw_rect(
                                 &mut image,
-                                x as i32,
-                                y as i32,
-                                w as i32,
-                                h as i32,
+                                left as i32,
+                                top as i32,
+                                width as i32,
+                                height as i32,
                                 Rgba([220, 70, 70, 255]),
                             ),
-                            b'm' => {
-                                for yy in y..y + h {
-                                    for xx in x..x + w {
-                                        image.put_pixel(xx, yy, Rgba([0, 0, 0, 255]));
-                                    }
-                                }
-                            }
-                            b'a' => {
-                                // The drag direction is already in image space.
-                                line(
-                                    &mut image,
-                                    (x0 as f32 / scale) as i32,
-                                    (y0 as f32 / scale) as i32,
-                                    (x1 as f32 / scale) as i32,
-                                    (y1 as f32 / scale) as i32,
-                                    Rgba([220, 70, 70, 255]),
-                                );
-                            }
+                            b'm' => fill_rect(
+                                &mut image,
+                                left as i32,
+                                top as i32,
+                                width as i32,
+                                height as i32,
+                                Rgba([0, 0, 0, 255]),
+                            ),
+                            b'a' => line(&mut image, ix0, iy0, ix1, iy1, Rgba([220, 70, 70, 255])),
                             _ => {}
                         }
-                        set_title(&c, win, TITLE);
                     }
                 }
             }
@@ -309,30 +638,11 @@ fn review(mut image: RgbaImage, temp: &Path, notify_enabled: bool) -> Result<(),
                         let _ = c.flush();
                         return Ok(());
                     }
-                    0x63 => {
-                        mode = b'c';
-                        set_title(&c, win, "NIRUSHOT — crop: drag, then release · Esc close");
-                    }
-                    0x72 => {
-                        mode = b'r';
-                        set_title(
-                            &c,
-                            win,
-                            "NIRUSHOT — rectangle: drag, then release · Esc close",
-                        );
-                    }
-                    0x61 => {
-                        mode = b'a';
-                        set_title(&c, win, "NIRUSHOT — arrow: drag, then release · Esc close");
-                    }
-                    0x6d => {
-                        mode = b'm';
-                        set_title(&c, win, "NIRUSHOT — mask: drag, then release · Esc close");
-                    }
-                    0x30 => {
-                        mode = b'0';
-                        set_title(&c, win, TITLE);
-                    }
+                    0x63 => mode = b'c',
+                    0x72 => mode = b'r',
+                    0x61 => mode = b'a',
+                    0x6d => mode = b'm',
+                    0x30 => mode = b'0',
                     0x73 | 0xff0d => {
                         let path = default_path();
                         if let Some(parent) = path.parent() {
@@ -344,7 +654,7 @@ fn review(mut image: RgbaImage, temp: &Path, notify_enabled: bool) -> Result<(),
                         let _ = copy_to_clipboard(&path);
                         println!("{}", path.display());
                         if notify_enabled {
-                            notify(&path.to_string_lossy());
+                            notify(&path.to_string_lossy(), true);
                         }
                         let _ = std::fs::remove_file(temp);
                         let _ = c.destroy_window(win);
@@ -352,14 +662,13 @@ fn review(mut image: RgbaImage, temp: &Path, notify_enabled: bool) -> Result<(),
                         return Ok(());
                     }
                     0x79 => {
-                        let path = temp.with_extension("review.png");
                         image
-                            .save(&path)
-                            .map_err(|e| format!("save {}: {e}", path.display()))?;
-                        copy_to_clipboard(&path)?;
-                        println!("{}", path.display());
+                            .save(temp)
+                            .map_err(|e| format!("save {}: {e}", temp.display()))?;
+                        copy_to_clipboard(temp)?;
+                        println!("{}", temp.display());
                         if notify_enabled {
-                            notify("copied to clipboard");
+                            notify(&temp.to_string_lossy(), false);
                         }
                     }
                     _ => {}
@@ -398,6 +707,12 @@ fn copy_to_clipboard(path: &Path) -> Result<(), String> {
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
+    if let Some(index) = args.iter().position(|a| a == "--notify-result") {
+        if let Some(path) = args.get(index + 1) {
+            notify_and_handle(Path::new(path), args.iter().any(|a| a == "--copied"));
+        }
+        return;
+    }
     if args.iter().any(|a| a == "--version") {
         println!("NIRUSHOT {}", env!("CARGO_PKG_VERSION"));
         return;
@@ -519,7 +834,21 @@ fn main() {
     let path = target.to_string_lossy().to_string();
     println!("{path}");
     if notify_enabled {
-        notify(&path);
+        if save.is_some() {
+            notify(&path, copy);
+        } else {
+            let _ = Command::new("notify-send")
+                .args([
+                    "-a",
+                    "NIRUSHOT",
+                    "-t",
+                    "6000",
+                    "Screenshot",
+                    "Copied to the clipboard",
+                    &path,
+                ])
+                .status();
+        }
     }
     if save.is_none() {
         let _ = std::fs::remove_file(&target);
