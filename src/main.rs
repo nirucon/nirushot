@@ -1,7 +1,8 @@
 use std::{
     env,
+    fs::File,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     thread,
     time::Duration,
 };
@@ -375,6 +376,21 @@ fn toolbar_mode(font: &FontArc, x: i32) -> Option<u8> {
     None
 }
 
+fn intern_atom(c: &RustConnection, name: &str) -> Option<Atom> {
+    c.intern_atom(false, name.as_bytes())
+        .ok()
+        .and_then(|r| r.reply().ok())
+        .map(|r| r.atom)
+}
+
+fn close_review(c: &RustConnection, win: Window, temp: &Path) {
+    let _ = c.ungrab_keyboard(x11rb::CURRENT_TIME);
+    let _ = c.ungrab_pointer(x11rb::CURRENT_TIME);
+    let _ = std::fs::remove_file(temp);
+    let _ = c.destroy_window(win);
+    let _ = c.flush();
+}
+
 fn review(mut image: RgbaImage, temp: &Path, notify_enabled: bool) -> Result<(), String> {
     let (c, screen) = x11rb::connect(None).map_err(|e| e.to_string())?;
     let root = c.setup().roots[screen].root;
@@ -385,10 +401,10 @@ fn review(mut image: RgbaImage, temp: &Path, notify_enabled: bool) -> Result<(),
     let initial = (max_w / image.width() as f32)
         .min(max_h / image.height() as f32)
         .min(1.0);
-    let win_w = ((image.width() as f32 * initial) as u32)
+    let mut win_w = ((image.width() as f32 * initial) as u32)
         .max(760)
         .min(sw.saturating_sub(24));
-    let win_h = TOOLBAR + (image.height() as f32 * initial).max(1.0) as u32;
+    let mut win_h = TOOLBAR + (image.height() as f32 * initial).max(1.0) as u32;
     let win = c.generate_id().map_err(|e| e.to_string())?;
     let gc = c.generate_id().map_err(|e| e.to_string())?;
     let x = ((sw as i32 - win_w as i32) / 2).max(0) as i16;
@@ -435,15 +451,83 @@ fn review(mut image: RgbaImage, temp: &Path, notify_enabled: bool) -> Result<(),
         b"nirushot\0Nirushot\0",
     )
     .ok();
+    if let (Some(kind), Some(dialog)) = (
+        intern_atom(&c, "_NET_WM_WINDOW_TYPE"),
+        intern_atom(&c, "_NET_WM_WINDOW_TYPE_DIALOG"),
+    ) {
+        let _ = c.change_property32(PropMode::REPLACE, win, kind, AtomEnum::ATOM, &[dialog]);
+    }
+    let wm_protocols = intern_atom(&c, "WM_PROTOCOLS").unwrap_or(0);
+    let wm_delete = intern_atom(&c, "WM_DELETE_WINDOW").unwrap_or(0);
+    if wm_protocols != 0 && wm_delete != 0 {
+        let _ = c.change_property32(
+            PropMode::REPLACE,
+            win,
+            wm_protocols,
+            AtomEnum::ATOM,
+            &[wm_delete],
+        );
+    }
     c.map_window(win).map_err(|e| e.to_string())?;
     c.flush().map_err(|e| e.to_string())?;
     let theme = load_theme();
     let font = load_font();
     let mut mode = b'0';
-    let mut start: Option<(i32, i32)> = None;
+    let mut zoom = 1.0f32;
+    let mut pan = (0.0f32, 0.0f32);
+    let mut drag: Option<(i32, i32)> = None;
     let mut current: Option<(i32, i32)> = None;
+    let mut pan_drag: Option<(i32, i32, f32, f32)> = None;
     loop {
         let mut canvas = RgbaImage::from_pixel(win_w, win_h, rgb(theme.background));
+        let avail_w = win_w as f32;
+        let avail_h = (win_h.saturating_sub(TOOLBAR)) as f32;
+        let fit = (avail_w / image.width() as f32)
+            .min(avail_h / image.height() as f32)
+            .min(2.0);
+        let view_scale = (fit * zoom).clamp(0.03, 8.0);
+        let disp_w = (image.width() as f32 * view_scale).max(1.0) as u32;
+        let disp_h = (image.height() as f32 * view_scale).max(1.0) as u32;
+        let image_x = ((win_w as f32 - disp_w as f32) / 2.0 + pan.0).round();
+        let image_y = TOOLBAR as f32 + ((avail_h - disp_h as f32) / 2.0 + pan.1).round();
+        let display = if disp_w == image.width() && disp_h == image.height() {
+            image.clone()
+        } else {
+            image::imageops::resize(
+                &image,
+                disp_w,
+                disp_h,
+                image::imageops::FilterType::Lanczos3,
+            )
+        };
+        image::imageops::overlay(&mut canvas, &display, image_x as i64, image_y as i64);
+        if let (Some((x0, y0)), Some((x1, y1))) = (drag, current) {
+            let left = x0.min(x1);
+            let top = y0.min(y1);
+            let width = (x1 - x0).abs();
+            let height = (y1 - y0).abs();
+            match mode {
+                b'r' => draw_rect(
+                    &mut canvas,
+                    left,
+                    top,
+                    width,
+                    height,
+                    Rgba([220, 70, 70, 255]),
+                ),
+                b'm' => fill_rect(&mut canvas, left, top, width, height, Rgba([0, 0, 0, 255])),
+                b'a' => line(&mut canvas, x0, y0, x1, y1, Rgba([220, 70, 70, 255])),
+                b'c' => draw_rect(
+                    &mut canvas,
+                    left,
+                    top,
+                    width,
+                    height,
+                    Rgba([220, 200, 140, 255]),
+                ),
+                _ => {}
+            }
+        }
         fill_rect(
             &mut canvas,
             0,
@@ -487,7 +571,7 @@ fn review(mut image: RgbaImage, temp: &Path, notify_enabled: bool) -> Result<(),
                         13,
                         width as i32,
                         26,
-                        rgb(theme.accent),
+                        rgb(theme.foreground),
                     );
                 }
                 let colour = if active {
@@ -498,64 +582,42 @@ fn review(mut image: RgbaImage, temp: &Path, notify_enabled: bool) -> Result<(),
                 draw_text(&mut canvas, font, 12.0, pos + 9.0, 20.0, label, colour);
                 pos += width + 8.0;
             }
-            let hints = "s Save   y Copy   Esc Close";
-            let hint_width = text_width(font, 12.0, hints);
+            let zoom_label = if (zoom - 1.0).abs() < 0.01 {
+                "fit".to_string()
+            } else {
+                format!("{:.0}%", zoom * 100.0)
+            };
             draw_text(
                 &mut canvas,
                 font,
                 12.0,
-                win_w as f32 - hint_width - 16.0,
+                pos + 10.0,
                 20.0,
-                hints,
+                &zoom_label,
                 rgb(theme.muted),
             );
-        }
-        let avail_w = win_w as f32;
-        let avail_h = (win_h - TOOLBAR) as f32;
-        let view_scale = (avail_w / image.width() as f32)
-            .min(avail_h / image.height() as f32)
-            .min(2.0);
-        let disp_w = (image.width() as f32 * view_scale).max(1.0) as u32;
-        let disp_h = (image.height() as f32 * view_scale).max(1.0) as u32;
-        let image_x = ((win_w as f32 - disp_w as f32) / 2.0).max(0.0);
-        let image_y = TOOLBAR as f32 + ((avail_h - disp_h as f32) / 2.0).max(0.0);
-        let display = if disp_w == image.width() && disp_h == image.height() {
-            image.clone()
-        } else {
-            image::imageops::resize(
-                &image,
-                disp_w,
-                disp_h,
-                image::imageops::FilterType::Lanczos3,
-            )
-        };
-        image::imageops::overlay(&mut canvas, &display, image_x as i64, image_y as i64);
-        if let (Some((x0, y0)), Some((x1, y1))) = (start, current) {
-            let left = x0.min(x1);
-            let top = y0.min(y1);
-            let width = (x1 - x0).abs();
-            let height = (y1 - y0).abs();
-            match mode {
-                b'r' => draw_rect(
-                    &mut canvas,
-                    left,
-                    top,
-                    width,
-                    height,
-                    Rgba([220, 70, 70, 255]),
-                ),
-                b'm' => fill_rect(&mut canvas, left, top, width, height, Rgba([0, 0, 0, 255])),
-                b'a' => line(&mut canvas, x0, y0, x1, y1, Rgba([220, 70, 70, 255])),
-                b'c' => draw_rect(
-                    &mut canvas,
-                    left,
-                    top,
-                    width,
-                    height,
-                    Rgba([220, 200, 140, 255]),
-                ),
-                _ => {}
-            }
+            let line1 = "s save   y copy   esc close";
+            let line2 = "+/- zoom   0 fit   v view";
+            let hint_width = text_width(font, 11.0, line1).max(text_width(font, 11.0, line2));
+            let hint_x = win_w as f32 - hint_width - 16.0;
+            draw_text(
+                &mut canvas,
+                font,
+                11.0,
+                hint_x,
+                7.0,
+                line1,
+                rgb(theme.muted),
+            );
+            draw_text(
+                &mut canvas,
+                font,
+                11.0,
+                hint_x,
+                27.0,
+                line2,
+                rgb(theme.muted),
+            );
         }
         put_image(&c, win, gc, &canvas)?;
         let event = c.wait_for_event().map_err(|e| e.to_string())?;
@@ -565,10 +627,57 @@ fn review(mut image: RgbaImage, temp: &Path, notify_enabled: bool) -> Result<(),
             }
             Event::MapNotify(e) if e.window == win => {
                 let _ = c.set_input_focus(InputFocus::PARENT, win, x11rb::CURRENT_TIME);
+                let _ = c.grab_keyboard(
+                    false,
+                    win,
+                    x11rb::CURRENT_TIME,
+                    GrabMode::ASYNC,
+                    GrabMode::ASYNC,
+                );
+                let _ = c.grab_pointer(
+                    false,
+                    win,
+                    EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION,
+                    GrabMode::ASYNC,
+                    GrabMode::ASYNC,
+                    x11rb::NONE,
+                    x11rb::NONE,
+                    x11rb::CURRENT_TIME,
+                );
                 c.flush().ok();
             }
-            Event::ButtonPress(e) if e.event == win && e.detail == 1 => {
+            Event::ClientMessage(e)
+                if e.window == win
+                    && e.type_ == wm_protocols
+                    && e.data.as_data32()[0] == wm_delete =>
+            {
+                close_review(&c, win, temp);
+                return Ok(());
+            }
+            Event::ConfigureNotify(e) if e.window == win => {
+                if e.width as u32 != win_w || e.height as u32 != win_h {
+                    win_w = e.width.max(320) as u32;
+                    win_h = e.height.max(TOOLBAR as u16 + 80) as u32;
+                }
+            }
+            Event::ButtonPress(e) if e.event == win => {
                 let _ = c.set_input_focus(InputFocus::PARENT, win, x11rb::CURRENT_TIME);
+                if e.detail == 4 || e.detail == 5 {
+                    zoom = if e.detail == 4 {
+                        (zoom * 1.25).min(8.0)
+                    } else {
+                        (zoom / 1.25).max(0.1)
+                    };
+                    pan = (0.0, 0.0);
+                    continue;
+                }
+                if e.detail == 2 {
+                    pan_drag = Some((e.event_x as i32, e.event_y as i32, pan.0, pan.1));
+                    continue;
+                }
+                if e.detail != 1 {
+                    continue;
+                }
                 if e.event_y < TOOLBAR as i16 {
                     if let Some(font) = &font {
                         if let Some(selected) = toolbar_mode(font, e.event_x as i32) {
@@ -577,54 +686,75 @@ fn review(mut image: RgbaImage, temp: &Path, notify_enabled: bool) -> Result<(),
                     }
                     continue;
                 }
-                start = Some((e.event_x as i32, e.event_y as i32));
-                current = start;
+                if mode == b'0' {
+                    pan_drag = Some((e.event_x as i32, e.event_y as i32, pan.0, pan.1));
+                } else {
+                    drag = Some((e.event_x as i32, e.event_y as i32));
+                    current = drag;
+                }
             }
-            Event::MotionNotify(e) if start.is_some() => {
-                current = Some((e.event_x as i32, e.event_y as i32));
+            Event::MotionNotify(e) => {
+                if let Some((sx, sy, px, py)) = pan_drag {
+                    pan = (
+                        px + (e.event_x as i32 - sx) as f32,
+                        py + (e.event_y as i32 - sy) as f32,
+                    );
+                } else if drag.is_some() {
+                    current = Some((e.event_x as i32, e.event_y as i32));
+                }
             }
-            Event::ButtonRelease(e) if e.event == win && e.detail == 1 => {
-                if let (Some((x0, y0)), Some((x1, y1))) = (start.take(), current) {
-                    let to_image = |x: i32, y: i32| {
-                        let ix = ((x as f32 - image_x) / view_scale).round() as i32;
-                        let iy = ((y as f32 - image_y) / view_scale).round() as i32;
-                        (
-                            ix.clamp(0, image.width() as i32),
-                            iy.clamp(0, image.height() as i32),
-                        )
-                    };
-                    let (ix0, iy0) = to_image(x0, y0);
-                    let (ix1, iy1) = to_image(x1, y1);
-                    let left = ix0.min(ix1) as u32;
-                    let top = iy0.min(iy1) as u32;
-                    let width = (ix1 - ix0).unsigned_abs();
-                    let height = (iy1 - iy0).unsigned_abs();
-                    if width > 2 && height > 2 {
-                        let width = width.min(image.width() - left);
-                        let height = height.min(image.height() - top);
-                        match mode {
-                            b'c' => {
-                                image = image::imageops::crop_imm(&image, left, top, width, height)
-                                    .to_image()
+            Event::ButtonRelease(e) if e.event == win => {
+                if e.detail == 2 || pan_drag.is_some() {
+                    pan_drag = None;
+                }
+                if e.detail == 1 {
+                    if let (Some((x0, y0)), Some((x1, y1))) = (drag.take(), current) {
+                        let to_image = |x: i32, y: i32| {
+                            let ix = ((x as f32 - image_x) / view_scale).round() as i32;
+                            let iy = ((y as f32 - image_y) / view_scale).round() as i32;
+                            (
+                                ix.clamp(0, image.width() as i32),
+                                iy.clamp(0, image.height() as i32),
+                            )
+                        };
+                        let (ix0, iy0) = to_image(x0, y0);
+                        let (ix1, iy1) = to_image(x1, y1);
+                        let left = ix0.min(ix1) as u32;
+                        let top = iy0.min(iy1) as u32;
+                        let width = (ix1 - ix0).unsigned_abs();
+                        let height = (iy1 - iy0).unsigned_abs();
+                        if width > 2 && height > 2 {
+                            let width = width.min(image.width() - left);
+                            let height = height.min(image.height() - top);
+                            match mode {
+                                b'c' => {
+                                    image =
+                                        image::imageops::crop_imm(&image, left, top, width, height)
+                                            .to_image();
+                                    zoom = 1.0;
+                                    pan = (0.0, 0.0);
+                                }
+                                b'r' => draw_rect(
+                                    &mut image,
+                                    left as i32,
+                                    top as i32,
+                                    width as i32,
+                                    height as i32,
+                                    Rgba([220, 70, 70, 255]),
+                                ),
+                                b'm' => fill_rect(
+                                    &mut image,
+                                    left as i32,
+                                    top as i32,
+                                    width as i32,
+                                    height as i32,
+                                    Rgba([0, 0, 0, 255]),
+                                ),
+                                b'a' => {
+                                    line(&mut image, ix0, iy0, ix1, iy1, Rgba([220, 70, 70, 255]))
+                                }
+                                _ => {}
                             }
-                            b'r' => draw_rect(
-                                &mut image,
-                                left as i32,
-                                top as i32,
-                                width as i32,
-                                height as i32,
-                                Rgba([220, 70, 70, 255]),
-                            ),
-                            b'm' => fill_rect(
-                                &mut image,
-                                left as i32,
-                                top as i32,
-                                width as i32,
-                                height as i32,
-                                Rgba([0, 0, 0, 255]),
-                            ),
-                            b'a' => line(&mut image, ix0, iy0, ix1, iy1, Rgba([220, 70, 70, 255])),
-                            _ => {}
                         }
                     }
                 }
@@ -633,16 +763,26 @@ fn review(mut image: RgbaImage, temp: &Path, notify_enabled: bool) -> Result<(),
                 let key = key_name(&c, e.detail);
                 match key {
                     0xff1b => {
-                        let _ = std::fs::remove_file(temp);
-                        let _ = c.destroy_window(win);
-                        let _ = c.flush();
+                        close_review(&c, win, temp);
                         return Ok(());
                     }
                     0x63 => mode = b'c',
                     0x72 => mode = b'r',
                     0x61 => mode = b'a',
                     0x6d => mode = b'm',
-                    0x30 => mode = b'0',
+                    0x76 => mode = b'0',
+                    0x2b | 0x3d | 0xffab => {
+                        zoom = (zoom * 1.25).min(8.0);
+                        pan = (0.0, 0.0);
+                    }
+                    0x2d | 0xffad => {
+                        zoom = (zoom / 1.25).max(0.1);
+                        pan = (0.0, 0.0);
+                    }
+                    0x30 | 0x66 => {
+                        zoom = 1.0;
+                        pan = (0.0, 0.0);
+                    }
                     0x73 | 0xff0d => {
                         let path = default_path();
                         if let Some(parent) = path.parent() {
@@ -651,14 +791,12 @@ fn review(mut image: RgbaImage, temp: &Path, notify_enabled: bool) -> Result<(),
                         image
                             .save(&path)
                             .map_err(|e| format!("save {}: {e}", path.display()))?;
-                        let _ = copy_to_clipboard(&path);
+                        let copied = copy_to_clipboard(&path).is_ok();
                         println!("{}", path.display());
                         if notify_enabled {
-                            notify(&path.to_string_lossy(), true);
+                            notify(&path.to_string_lossy(), copied);
                         }
-                        let _ = std::fs::remove_file(temp);
-                        let _ = c.destroy_window(win);
-                        let _ = c.flush();
+                        close_review(&c, win, temp);
                         return Ok(());
                     }
                     0x79 => {
@@ -684,25 +822,34 @@ fn default_path() -> PathBuf {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    home.join("Pictures").join(format!(
-        "Screenshot-{}.png",
+    let directory = home.join("Pictures");
+    let stem = format!(
+        "Screenshot-{}",
         chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
-    ))
+    );
+    let first = directory.join(format!("{stem}.png"));
+    if !first.exists() {
+        return first;
+    }
+    for index in 2..1000 {
+        let candidate = directory.join(format!("{stem}-{index}.png"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    first
 }
 
 fn copy_to_clipboard(path: &Path) -> Result<(), String> {
-    run(
-        "xclip",
-        &[
-            "-selection".into(),
-            "clipboard".into(),
-            "-t".into(),
-            "image/png".into(),
-            "-i".into(),
-            path.to_string_lossy().to_string(),
-        ],
-    )
-    .map(|_| ())
+    let input = File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    Command::new("xclip")
+        .args(["-selection", "clipboard", "-t", "image/png", "-i"])
+        .stdin(Stdio::from(input))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("cannot start xclip: {e}"))
 }
 
 fn main() {

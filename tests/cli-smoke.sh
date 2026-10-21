@@ -25,15 +25,17 @@ cat > "$T/bin/notify-send" <<'EOF'
 printf '1\n' > "$NIRUSHOT_FIXTURE/notified"
 EOF
 chmod +x "$T/bin/"*
-"$BIN" --version | grep -q "NIRUSHOT 0.3.0"
+"$BIN" --version | grep -q "NIRUSHOT 0.4.0"
 "$BIN" --region --save "$T/region.png" > "$T/out"
 grep -qxF -- "--quiet -g 100x50+20+30 $T/region.png" "$T/maim"
 [ ! -e "$T/xclip" ]
 [ -f "$T/region.png" ]
+for _ in $(seq 1 100); do grep -qxF 1 "$T/notified" && break; sleep .02; done
 grep -qxF 1 "$T/notified"
 rm -f "$T/notified"
 "$BIN" --full --copy --no-notify
-grep -q -- "-selection clipboard -t image/png -i " "$T/xclip"
+for _ in $(seq 1 100); do [ -e "$T/xclip" ] && break; sleep .02; done
+grep -qxF -- "-selection clipboard -t image/png -i" "$T/xclip"
 [ ! -e "$T/notified" ]
 [ ! -f "/tmp/nirushot-$$.png" ]
 echo 'PASS: region/full capture, save, clipboard and notification'
