@@ -25,6 +25,7 @@ cat > "$T/bin/notify-send" <<'EOF'
 printf '1\n' > "$NIRUSHOT_FIXTURE/notified"
 EOF
 chmod +x "$T/bin/"*
+"$BIN" --version | grep -q "NIRUSHOT 0.2.0"
 "$BIN" --region --save "$T/region.png" > "$T/out"
 grep -qxF -- "--quiet -g 100x50+20+30 $T/region.png" "$T/maim"
 [ ! -e "$T/xclip" ]

@@ -1,13 +1,15 @@
 [package]
 name = "nirushot"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.85"
 license = "MIT"
-description = "NIRU screenshot capture helper"
+description = "NIRU screenshot capture and review helper"
 
 [dependencies]
 chrono = "0.4"
+image = { version = "0.25", default-features = false, features = ["png"] }
+x11rb = "0.13"
 
 [profile.release]
 lto = true
