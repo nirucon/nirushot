@@ -1,9 +1,10 @@
 # NIRUSHOT
 
-On-demand screenshot capture, review and annotation for the NIRU X11 desktop.
+**Part of [NIRUX - A minimal X11 desktop by Nicklas Rudolfsson](https://github.com/nirucon/nirux).**
+
+**Early beta.** On-demand screenshot capture, review and annotation for the NIRU X11 desktop.
 No daemon, upload service or background process.
 
-Part of the [NIRUX suite](https://github.com/nirucon/nirux): [NIRUWM](https://github.com/nirucon/niruwm) · [NIRUBAR](https://github.com/nirucon/nirubar) · [NIRUSCREENSAVER](https://github.com/nirucon/niruscreensaver) · [NIRULOCK](https://github.com/nirucon/nirulock) · [NIRULAUNCHER](https://github.com/nirucon/nirulauncher) · [NIRUNOTIFY](https://github.com/nirucon/nirunotify) · [NIRUSHOT](https://github.com/nirucon/nirushot).
 
 ## Usage
 
@@ -66,3 +67,7 @@ The smoke test uses fake capture and notification providers and does not need a
 graphical session.
 
 MIT. Copyright 2026 Nicklas Rudolfsson.
+
+## NIRUX suite
+
+[NIRUX](https://github.com/nirucon/nirux) · [NIRUWM](https://github.com/nirucon/niruwm) · [NIRUBAR](https://github.com/nirucon/nirubar) · [NIRUSCREENSAVER](https://github.com/nirucon/niruscreensaver) · [NIRULOCK](https://github.com/nirucon/nirulock) · [NIRULAUNCHER](https://github.com/nirucon/nirulauncher) · [NIRUNOTIFY](https://github.com/nirucon/nirunotify) · [NIRUSHOT](https://github.com/nirucon/nirushot)
