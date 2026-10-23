@@ -36,7 +36,7 @@ cat > "$T/bin/notify-send" <<'EOF'
 printf '1\n' > "$NIRUSHOT_FIXTURE/notified"
 EOF
 chmod +x "$T/bin/"*
-"$BIN" --version | grep -q "NIRUSHOT 0.4.3"
+"$BIN" --version | grep -q "NIRUSHOT 0.4.4"
 if "$BIN" --delay nope >/dev/null 2>&1; then echo 'FAIL invalid delay accepted' >&2; exit 1; fi
 if "$BIN" --save >/dev/null 2>&1; then echo 'FAIL missing save path accepted' >&2; exit 1; fi
 "$BIN" --region --save "$T/region.png" > "$T/out"

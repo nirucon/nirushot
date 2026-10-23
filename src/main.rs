@@ -194,6 +194,20 @@ fn load_theme() -> Theme {
             theme.border = 0x243846;
             theme.accent = 0x86aec8;
         }
+        "niru-the-norns" => {
+            theme.background = 0x111110;
+            theme.foreground = 0xece9e4;
+            theme.muted = 0xa6a19b;
+            theme.border = 0x3b3936;
+            theme.accent = 0xc9c2b9;
+        }
+        "niru-winter-nights" => {
+            theme.background = 0x1f232b;
+            theme.foreground = 0xead9c3;
+            theme.muted = 0xb9aa9a;
+            theme.border = 0x4e5157;
+            theme.accent = 0xd8c4aa;
+        }
         _ => {}
     }
     theme.surface = blend_colour(theme.background, theme.foreground, 0.08);

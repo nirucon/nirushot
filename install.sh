@@ -1,6 +1,6 @@
 #!/bin/sh
 set -eu
-VERSION="0.4.3"
+VERSION="0.4.4"
 REPO="${NIRUSHOT_REPO:-nirucon/nirushot}"
 PREFIX="${NIRUSHOT_PREFIX:-$HOME/.local}"
 BIN="$PREFIX/bin"
