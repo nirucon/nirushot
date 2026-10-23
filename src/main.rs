@@ -166,6 +166,20 @@ fn load_theme() -> Theme {
             theme.border = 0xd8cdbb;
             theme.accent = 0xa63d2f;
         }
+        "niru-forest-vigil" => {
+            theme.background = 0x0b100c;
+            theme.foreground = 0xd8ded2;
+            theme.muted = 0x96a292;
+            theme.border = 0x2b362c;
+            theme.accent = 0x8aa87e;
+        }
+        "niru-blood-of-urdr" => {
+            theme.background = 0x120808;
+            theme.foreground = 0xe8d6cf;
+            theme.muted = 0xb09a92;
+            theme.border = 0x3a1d1b;
+            theme.accent = 0xc96050;
+        }
         _ => {}
     }
     theme.surface = blend_colour(theme.background, theme.foreground, 0.08);
