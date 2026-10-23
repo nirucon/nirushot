@@ -326,6 +326,24 @@ fn draw_rect(img: &mut RgbaImage, x: i32, y: i32, w: i32, h: i32, colour: Rgba<u
     }
 }
 
+fn arrow(img: &mut RgbaImage, x0: i32, y0: i32, x1: i32, y1: i32, colour: Rgba<u8>) {
+    line(img, x0, y0, x1, y1, colour);
+    let angle = ((y1 - y0) as f32).atan2((x1 - x0) as f32);
+    let length = 14.0;
+    for offset in [0.45_f32, -0.45] {
+        let end_x = x1 as f32 - (angle + offset).cos() * length;
+        let end_y = y1 as f32 - (angle + offset).sin() * length;
+        line(
+            img,
+            x1,
+            y1,
+            end_x.round() as i32,
+            end_y.round() as i32,
+            colour,
+        );
+    }
+}
+
 fn line(img: &mut RgbaImage, mut x0: i32, mut y0: i32, x1: i32, y1: i32, colour: Rgba<u8>) {
     let dx = (x1 - x0).abs();
     let sx = if x0 < x1 { 1 } else { -1 };
@@ -391,7 +409,12 @@ fn close_review(c: &RustConnection, win: Window, temp: &Path) {
     let _ = c.flush();
 }
 
-fn review(mut image: RgbaImage, temp: &Path, notify_enabled: bool) -> Result<(), String> {
+fn review(
+    mut image: RgbaImage,
+    temp: &Path,
+    save: Option<&Path>,
+    notify_enabled: bool,
+) -> Result<(), String> {
     let (c, screen) = x11rb::connect(None).map_err(|e| e.to_string())?;
     let root = c.setup().roots[screen].root;
     let sw = c.setup().roots[screen].width_in_pixels as u32;
@@ -516,7 +539,7 @@ fn review(mut image: RgbaImage, temp: &Path, notify_enabled: bool) -> Result<(),
                     Rgba([220, 70, 70, 255]),
                 ),
                 b'm' => fill_rect(&mut canvas, left, top, width, height, Rgba([0, 0, 0, 255])),
-                b'a' => line(&mut canvas, x0, y0, x1, y1, Rgba([220, 70, 70, 255])),
+                b'a' => arrow(&mut canvas, x0, y0, x1, y1, Rgba([220, 70, 70, 255])),
                 b'c' => draw_rect(
                     &mut canvas,
                     left,
@@ -723,7 +746,8 @@ fn review(mut image: RgbaImage, temp: &Path, notify_enabled: bool) -> Result<(),
                         let top = iy0.min(iy1) as u32;
                         let width = (ix1 - ix0).unsigned_abs();
                         let height = (iy1 - iy0).unsigned_abs();
-                        if width > 2 && height > 2 {
+                        let is_arrow = mode == b'a';
+                        if (width > 2 && height > 2) || (is_arrow && (width > 2 || height > 2)) {
                             let width = width.min(image.width() - left);
                             let height = height.min(image.height() - top);
                             match mode {
@@ -751,7 +775,7 @@ fn review(mut image: RgbaImage, temp: &Path, notify_enabled: bool) -> Result<(),
                                     Rgba([0, 0, 0, 255]),
                                 ),
                                 b'a' => {
-                                    line(&mut image, ix0, iy0, ix1, iy1, Rgba([220, 70, 70, 255]))
+                                    arrow(&mut image, ix0, iy0, ix1, iy1, Rgba([220, 70, 70, 255]))
                                 }
                                 _ => {}
                             }
@@ -784,13 +808,8 @@ fn review(mut image: RgbaImage, temp: &Path, notify_enabled: bool) -> Result<(),
                         pan = (0.0, 0.0);
                     }
                     0x73 | 0xff0d => {
-                        let path = default_path();
-                        if let Some(parent) = path.parent() {
-                            let _ = std::fs::create_dir_all(parent);
-                        }
-                        image
-                            .save(&path)
-                            .map_err(|e| format!("save {}: {e}", path.display()))?;
+                        let path = save.map(Path::to_path_buf).unwrap_or_else(default_path);
+                        atomic_save(&image, &path)?;
                         let copied = copy_to_clipboard(&path).is_ok();
                         println!("{}", path.display());
                         if notify_enabled {
@@ -840,6 +859,22 @@ fn default_path() -> PathBuf {
     first
 }
 
+fn atomic_save(image: &RgbaImage, path: &Path) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("invalid output path: {}", path.display()))?
+        .to_string_lossy();
+    let temporary = path.with_file_name(format!(".{name}.nirushot-{}.png", std::process::id()));
+    image
+        .save(&temporary)
+        .map_err(|e| format!("save {}: {e}", temporary.display()))?;
+    std::fs::rename(&temporary, path).map_err(|e| format!("replace {}: {e}", path.display()))?;
+    Ok(())
+}
+
 fn copy_to_clipboard(path: &Path) -> Result<(), String> {
     let input = File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
     Command::new("xclip")
@@ -868,6 +903,10 @@ fn main() {
         println!("Usage: nirushot [--region|--window|--full] [--delay SECONDS] [--copy|--save PATH] [--review] [--no-notify]");
         return;
     }
+    let fail = |message: &str| -> ! {
+        eprintln!("nirushot: {message}");
+        std::process::exit(2);
+    };
     let mut mode = "region";
     let mut delay = 0u64;
     let mut copy = false;
@@ -882,38 +921,34 @@ fn main() {
             "--full" => mode = "full",
             "--delay" => {
                 i += 1;
-                delay = args
-                    .get(i)
-                    .and_then(|v| v.parse().ok())
-                    .ok_or("--delay needs seconds")
-                    .unwrap_or(0);
+                let value = args.get(i).unwrap_or_else(|| fail("--delay needs seconds"));
+                delay = value
+                    .parse()
+                    .unwrap_or_else(|_| fail("--delay needs a non-negative number"));
             }
             "--copy" => copy = true,
             "--save" => {
                 i += 1;
-                save = Some(PathBuf::from(
-                    args.get(i)
-                        .ok_or("--save needs a path")
-                        .unwrap_or(&String::new()),
-                ));
+                let value = args.get(i).unwrap_or_else(|| fail("--save needs a path"));
+                if value.is_empty() {
+                    fail("--save needs a non-empty path");
+                }
+                save = Some(PathBuf::from(value));
             }
             "--review" => review_flag = true,
             "--no-notify" => notify_enabled = false,
-            other => {
-                eprintln!("nirushot: unknown option {other}");
-                std::process::exit(2);
-            }
+            other => fail(&format!("unknown option {other}")),
         }
         i += 1;
     }
     if delay > 0 {
         thread::sleep(Duration::from_secs(delay));
     }
-    let temp = PathBuf::from("/tmp").join(format!("nirushot-{}.png", std::process::id()));
-    let target = save.clone().unwrap_or_else(|| temp.clone());
-    if let Some(parent) = target.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
+    let tempdir = tempfile::Builder::new()
+        .prefix("nirushot-")
+        .tempdir()
+        .unwrap_or_else(|e| fail(&format!("cannot create private temporary directory: {e}")));
+    let temp = tempdir.path().join("capture.png");
     let mut maim = vec!["--quiet".to_string()];
     match mode {
         "region" => {
@@ -933,71 +968,96 @@ fn main() {
                     println!("cancelled");
                     return;
                 }
-                Err(e) => {
-                    eprintln!("nirushot: selection failed: {e}");
-                    std::process::exit(1);
-                }
+                Err(e) => fail(&format!("selection failed: {e}")),
             };
             maim.extend(["-g".into(), geometry]);
         }
         "window" => {
             let id = match active_window() {
                 Ok(id) => id,
-                Err(e) => {
-                    eprintln!("nirushot: {e}");
-                    std::process::exit(1);
-                }
+                Err(e) => fail(&e),
             };
             maim.extend(["-i".into(), id]);
         }
         _ => {}
     }
-    maim.push(target.to_string_lossy().to_string());
+    maim.push(temp.to_string_lossy().to_string());
     if let Err(e) = run("maim", &maim) {
-        eprintln!("nirushot: capture failed: {e}");
-        std::process::exit(1);
+        fail(&format!("capture failed: {e}"));
     }
     if review_flag || (save.is_none() && !copy) {
-        let image = match image::open(&target) {
+        let image = match image::open(&temp) {
             Ok(image) => image.to_rgba8(),
-            Err(e) => {
-                eprintln!("nirushot: cannot read capture: {e}");
-                let _ = std::fs::remove_file(&target);
-                std::process::exit(1);
-            }
+            Err(e) => fail(&format!("cannot read capture: {e}")),
         };
-        if let Err(e) = review(image, &target, notify_enabled) {
-            eprintln!("nirushot: {e}");
-            std::process::exit(1);
+        if let Err(e) = review(image, &temp, save.as_deref(), notify_enabled) {
+            fail(&e);
+        }
+        return;
+    }
+    if let Some(path) = save.as_deref() {
+        let image = match image::open(&temp) {
+            Ok(image) => image.to_rgba8(),
+            Err(e) => fail(&format!("cannot read capture: {e}")),
+        };
+        if let Err(e) = atomic_save(&image, path) {
+            fail(&e);
+        }
+        let copied = copy && copy_to_clipboard(path).is_ok();
+        println!("{}", path.display());
+        if notify_enabled {
+            notify(&path.to_string_lossy(), copied);
         }
         return;
     }
     if copy {
-        if let Err(e) = copy_to_clipboard(&target) {
-            eprintln!("nirushot: copy failed: {e}");
-            std::process::exit(1);
+        if let Err(e) = copy_to_clipboard(&temp) {
+            fail(&format!("copy failed: {e}"));
         }
     }
-    let path = target.to_string_lossy().to_string();
-    println!("{path}");
+    println!("{}", temp.display());
     if notify_enabled {
-        if save.is_some() {
-            notify(&path, copy);
-        } else {
-            let _ = Command::new("notify-send")
-                .args([
-                    "-a",
-                    "NIRUSHOT",
-                    "-t",
-                    "6000",
-                    "Screenshot",
-                    "Copied to the clipboard",
-                    &path,
-                ])
-                .status();
-        }
+        let _ = Command::new("notify-send")
+            .args([
+                "-a",
+                "NIRUSHOT",
+                "-t",
+                "6000",
+                "Screenshot",
+                "Copied to the clipboard",
+                temp.to_string_lossy().as_ref(),
+            ])
+            .status();
     }
-    if save.is_none() {
-        let _ = std::fs::remove_file(&target);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn atomic_save_writes_complete_png() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.png");
+        let image = RgbaImage::from_pixel(4, 3, Rgba([10, 20, 30, 255]));
+        atomic_save(&image, &path).unwrap();
+        let decoded = image::open(&path).unwrap().to_rgba8();
+        assert_eq!(decoded.dimensions(), (4, 3));
+        let pixel = decoded.get_pixel(0, 0);
+        assert_eq!([pixel[0], pixel[1], pixel[2]], [10, 20, 30]);
+    }
+
+    #[test]
+    fn arrow_has_a_head_and_axis_aligned_support() {
+        let mut image = RgbaImage::from_pixel(100, 40, Rgba([255, 255, 255, 255]));
+        arrow(&mut image, 5, 20, 90, 20, Rgba([220, 70, 70, 255]));
+        let red =
+            |x: u32, y: u32| image.get_pixel(x, y)[0] == 220 && image.get_pixel(x, y)[1] == 70;
+        assert!(red(5, 20), "shaft start");
+        assert!(red(90, 20), "arrow tip");
+        assert!(
+            red(80, 15) || red(80, 25),
+            "arrow head opens around the tip"
+        );
     }
 }
