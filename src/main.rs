@@ -180,6 +180,20 @@ fn load_theme() -> Theme {
             theme.border = 0x3a1d1b;
             theme.accent = 0xc96050;
         }
+        "niru-root-and-stone" => {
+            theme.background = 0x17100b;
+            theme.foreground = 0xeadfd2;
+            theme.muted = 0xb5a08c;
+            theme.border = 0x3a2a1e;
+            theme.accent = 0xc19768;
+        }
+        "niru-blue-horizon" => {
+            theme.background = 0x0b1821;
+            theme.foreground = 0xdce6eb;
+            theme.muted = 0x93a6b2;
+            theme.border = 0x243846;
+            theme.accent = 0x86aec8;
+        }
         _ => {}
     }
     theme.surface = blend_colour(theme.background, theme.foreground, 0.08);
