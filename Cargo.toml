@@ -10,7 +10,9 @@ description = "NIRU screenshot capture and review helper"
 ab_glyph = "0.2"
 chrono = "0.4"
 tempfile = "3"
-image = { version = "0.25", default-features = false, features = ["png"] }
+# 0.25.8 keeps the same PNG API while the locked build still compiles with
+# Rust 1.85; later 0.25 releases require 1.88.
+image = { version = "0.25.8", default-features = false, features = ["png"] }
 x11rb = "0.13"
 
 [profile.release]

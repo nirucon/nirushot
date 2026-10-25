@@ -2,7 +2,7 @@
 
 **Part of [NIRUX - A minimal X11 desktop by Nicklas Rudolfsson](https://github.com/nirucon/nirux).**
 
-**Early beta.** On-demand screenshot capture, review and annotation for the NIRU X11 desktop.
+**Early beta.** On-demand screenshot capture, review and annotation for the NIRUX X11 desktop.
 No daemon, upload service or background process.
 
 
@@ -34,7 +34,7 @@ no file.
 - Escape or the close button: discard
 
 The review window is a centred floating X11 dialog, so NIRUWM does not tile it.
-The toolbar and typography follow the active NIRUWM theme and configured
+The toolbar and typography follow the active NIRUX theme and configured
 monospace font. Pointer and keyboard grabs exist only while the dialog is open.
 The original capture is never overwritten; crop, rectangle, arrow and mask are
 applied only in the exported result.
