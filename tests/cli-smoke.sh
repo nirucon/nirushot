@@ -8,6 +8,7 @@ mkdir -p "$HOME" "$T/bin"
 printf '0\n' > "$T/notified"
 cat > "$T/bin/slop" <<'EOF'
 #!/bin/sh
+printf '%s\n' "$*" > "$NIRUSHOT_FIXTURE/slop"
 printf '100x50+20+30\n'
 EOF
 cat > "$T/bin/maim" <<'EOF'
@@ -36,10 +37,11 @@ cat > "$T/bin/notify-send" <<'EOF'
 printf '1\n' > "$NIRUSHOT_FIXTURE/notified"
 EOF
 chmod +x "$T/bin/"*
-"$BIN" --version | grep -q "NIRUSHOT 0.4.4"
+"$BIN" --version | grep -q "NIRUSHOT 0.4.5"
 if "$BIN" --delay nope >/dev/null 2>&1; then echo 'FAIL invalid delay accepted' >&2; exit 1; fi
 if "$BIN" --save >/dev/null 2>&1; then echo 'FAIL missing save path accepted' >&2; exit 1; fi
 "$BIN" --region --save "$T/region.png" > "$T/out"
+grep -q -- "-b 4 -c 1.0,0.72,0.15,1.0" "$T/slop"
 grep -q -- "--quiet -g 100x50+20+30 " "$T/maim"
 grep -q 'nirushot-.*\.png$' "$T/maim"
 [ ! -e "$T/xclip" ]

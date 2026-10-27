@@ -1000,9 +1000,9 @@ fn main() {
                     "-f".into(),
                     "%wx%h+%x+%y".into(),
                     "-b".into(),
-                    "1".into(),
+                    "4".into(),
                     "-c".into(),
-                    "0.5,0.5,0.5,0.5".into(),
+                    "1.0,0.72,0.15,1.0".into(),
                 ],
             ) {
                 Ok(g) if !g.is_empty() => g,

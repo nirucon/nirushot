@@ -33,7 +33,9 @@ no file.
 - `y`: copy without saving
 - Escape or the close button: discard
 
-The review window is a centred floating X11 dialog, so NIRUWM does not tile it.
+The initial region selector uses a thick, opaque amber border so it remains
+visible on light and dark wallpapers. The review window is a centred floating
+X11 dialog, so NIRUWM does not tile it.
 The toolbar and typography follow the active NIRUX theme and configured
 monospace font. Pointer and keyboard grabs exist only while the dialog is open.
 The original capture is never overwritten; crop, rectangle, arrow and mask are
