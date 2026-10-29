@@ -17,9 +17,10 @@ nirushot --region --save ~/Pictures/shot.png
 nirushot --full --copy
 ```
 
-Without `--copy` or `--save`, the capture opens in a review dialog. `--save`
-writes the chosen file; `--copy` skips review and copies directly. Cancel leaves
-no file.
+A capture is always copied to the clipboard. Without `--copy` or `--save`, it
+also opens in a review dialog. `--save` writes the chosen file; `--copy` skips
+review. Saving or copying an edited review replaces the clipboard with the edited
+image. Cancel leaves no file, but the initial capture remains pasteable.
 
 ## Review controls
 
@@ -31,6 +32,7 @@ no file.
 - Mouse wheel or `+`/`-`: zoom; `0`: fit
 - `s` or Enter: save to `~/Pictures/Screenshot-YYYY-MM-DD_HH-MM-SS.png` and copy
 - `y`: copy without saving
+- The initial capture is already in the clipboard before review opens
 - Escape or the close button: discard
 
 The initial region selector uses a thick, opaque amber border so it remains

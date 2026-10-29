@@ -37,14 +37,15 @@ cat > "$T/bin/notify-send" <<'EOF'
 printf '1\n' > "$NIRUSHOT_FIXTURE/notified"
 EOF
 chmod +x "$T/bin/"*
-"$BIN" --version | grep -q "NIRUSHOT 0.4.5"
+"$BIN" --version | grep -q "NIRUSHOT 0.4.6"
 if "$BIN" --delay nope >/dev/null 2>&1; then echo 'FAIL invalid delay accepted' >&2; exit 1; fi
 if "$BIN" --save >/dev/null 2>&1; then echo 'FAIL missing save path accepted' >&2; exit 1; fi
 "$BIN" --region --save "$T/region.png" > "$T/out"
 grep -q -- "-b 4 -c 1.0,0.72,0.15,1.0" "$T/slop"
 grep -q -- "--quiet -g 100x50+20+30 " "$T/maim"
 grep -q 'nirushot-.*\.png$' "$T/maim"
-[ ! -e "$T/xclip" ]
+[ -e "$T/xclip" ]
+grep -qxF -- "-selection clipboard -t image/png -i" "$T/xclip"
 [ -f "$T/region.png" ]
 file "$T/region.png" | grep -q 'PNG image data' || { echo 'FAIL saved file is not a PNG' >&2; exit 1; }
 for _ in $(seq 1 100); do grep -qxF 1 "$T/notified" && break; sleep .02; done

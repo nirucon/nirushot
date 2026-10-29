@@ -867,7 +867,7 @@ fn review(
                         copy_to_clipboard(temp)?;
                         println!("{}", temp.display());
                         if notify_enabled {
-                            notify(&temp.to_string_lossy(), false);
+                            notify(&temp.to_string_lossy(), true);
                         }
                     }
                     _ => {}
@@ -1027,6 +1027,9 @@ fn main() {
     if let Err(e) = run("maim", &maim) {
         fail(&format!("capture failed: {e}"));
     }
+    // A capture is always available for paste. Review may replace it with an
+    // edited image, but Save or Review must never leave the clipboard empty.
+    let copied_initial = copy_to_clipboard(&temp).is_ok();
     if review_flag || (save.is_none() && !copy) {
         let image = match image::open(&temp) {
             Ok(image) => image.to_rgba8(),
@@ -1045,17 +1048,15 @@ fn main() {
         if let Err(e) = atomic_save(&image, path) {
             fail(&e);
         }
-        let copied = copy && copy_to_clipboard(path).is_ok();
+        let copied = copy_to_clipboard(path).is_ok();
         println!("{}", path.display());
         if notify_enabled {
             notify(&path.to_string_lossy(), copied);
         }
         return;
     }
-    if copy {
-        if let Err(e) = copy_to_clipboard(&temp) {
-            fail(&format!("copy failed: {e}"));
-        }
+    if !copied_initial {
+        fail("copy failed: cannot start xclip");
     }
     println!("{}", temp.display());
     if notify_enabled {
