@@ -661,7 +661,7 @@ fn review(
                 &zoom_label,
                 rgb(theme.muted),
             );
-            let line1 = "s save   y copy   esc close";
+            let line1 = "s save   y copy   u share   esc close";
             let line2 = "+/- zoom   0 fit   v view";
             let hint_width = text_width(font, 11.0, line1).max(text_width(font, 11.0, line2));
             let hint_x = win_w as f32 - hint_width - 16.0;
@@ -869,6 +869,33 @@ fn review(
                         if notify_enabled {
                             notify(&temp.to_string_lossy(), true);
                         }
+                    }
+                    0x75 => {
+                        let state = env::var_os("XDG_STATE_HOME")
+                            .map(PathBuf::from)
+                            .unwrap_or_else(|| {
+                                env::var_os("HOME")
+                                    .map(PathBuf::from)
+                                    .unwrap_or_else(|| PathBuf::from("."))
+                                    .join(".local/state")
+                            })
+                            .join("nirushare");
+                        std::fs::create_dir_all(&state)
+                            .map_err(|e| format!("create {}: {e}", state.display()))?;
+                        let path = state.join(format!(
+                            "review-{}.png",
+                            chrono::Local::now().format("%Y%m%d-%H%M%S-%3f")
+                        ));
+                        image
+                            .save(&path)
+                            .map_err(|e| format!("save {}: {e}", path.display()))?;
+                        Command::new("nirulauncher")
+                            .arg("--share")
+                            .env("NIRUSHARE_SEND_FILE", &path)
+                            .spawn()
+                            .map_err(|e| format!("start NIRU Share: {e}"))?;
+                        close_review(&c, win, temp);
+                        return Ok(());
                     }
                     _ => {}
                 }
