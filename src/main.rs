@@ -333,19 +333,30 @@ fn to_x_bytes(c: &RustConnection, img: &RgbaImage) -> Vec<u8> {
 
 fn put_image(c: &RustConnection, win: Window, gc: Gcontext, img: &RgbaImage) -> Result<(), String> {
     let data = to_x_bytes(c, img);
-    c.put_image(
-        ImageFormat::Z_PIXMAP,
-        win,
-        gc,
-        img.width() as u16,
-        img.height() as u16,
-        0,
-        0,
-        0,
-        c.setup().roots[0].root_depth,
-        &data,
-    )
-    .map_err(|e| format!("put_image: {e}"))?;
+    let width = img.width().max(1);
+    let height = img.height().max(1);
+    let row_bytes = width as usize * 4;
+    let max_rows = (250_000 / row_bytes).max(1) as u32;
+    let mut y = 0;
+    while y < height {
+        let rows = max_rows.min(height - y);
+        let start = y as usize * row_bytes;
+        let end = start + rows as usize * row_bytes;
+        c.put_image(
+            ImageFormat::Z_PIXMAP,
+            win,
+            gc,
+            width as u16,
+            rows as u16,
+            0,
+            y as i16,
+            0,
+            c.setup().roots[0].root_depth,
+            &data[start..end],
+        )
+        .map_err(|e| format!("put_image: {e}"))?;
+        y += rows;
+    }
     c.flush().map_err(|e| e.to_string())
 }
 
