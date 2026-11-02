@@ -37,7 +37,7 @@ cat > "$T/bin/notify-send" <<'EOF'
 printf '1\n' > "$NIRUSHOT_FIXTURE/notified"
 EOF
 chmod +x "$T/bin/"*
-"$BIN" --version | grep -q "NIRUSHOT 0.4.6"
+"$BIN" --version | grep -q "NIRUSHOT 0.4.9"
 if "$BIN" --delay nope >/dev/null 2>&1; then echo 'FAIL invalid delay accepted' >&2; exit 1; fi
 if "$BIN" --save >/dev/null 2>&1; then echo 'FAIL missing save path accepted' >&2; exit 1; fi
 "$BIN" --region --save "$T/region.png" > "$T/out"
@@ -56,4 +56,19 @@ for _ in $(seq 1 100); do [ -e "$T/xclip" ] && break; sleep .02; done
 grep -qxF -- "-selection clipboard -t image/png -i" "$T/xclip"
 [ ! -e "$T/notified" ]
 [ ! -f "/tmp/nirushot-$$.png" ]
-echo 'PASS: region/full capture, save, clipboard and notification'
+# A clipboard helper that starts but exits unsuccessfully must make --copy fail.
+cat > "$T/bin/xclip" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+chmod +x "$T/bin/xclip"
+if "$BIN" --full --copy --no-notify >"$T/copy-fail.out" 2>"$T/copy-fail.err"; then
+  echo 'FAIL copy reported success when xclip failed' >&2
+  exit 1
+fi
+grep -q 'xclip exited with' "$T/copy-fail.err" || {
+  cat "$T/copy-fail.err" >&2
+  echo 'FAIL copy failure did not explain xclip' >&2
+  exit 1
+}
+echo 'PASS: region/full capture, save, clipboard, failed-copy detection and notification'

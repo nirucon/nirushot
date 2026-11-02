@@ -957,14 +957,26 @@ fn atomic_save(image: &RgbaImage, path: &Path) -> Result<(), String> {
 
 fn copy_to_clipboard(path: &Path) -> Result<(), String> {
     let input = File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
-    Command::new("xclip")
+    // Wait for xclip itself. It daemonises once it owns the selection, so this
+    // returns promptly on success; spawning and forgetting treated a launch
+    // that immediately failed as a successful copy.
+    let output = Command::new("xclip")
         .args(["-selection", "clipboard", "-t", "image/png", "-i"])
         .stdin(Stdio::from(input))
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("cannot start xclip: {e}"))
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("cannot start xclip: {e}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let detail = String::from_utf8_lossy(&output.stderr);
+    let detail = detail.trim();
+    if detail.is_empty() {
+        Err(format!("xclip exited with {}", output.status))
+    } else {
+        Err(format!("xclip exited with {}: {detail}", output.status))
+    }
 }
 
 fn main() {
@@ -1067,7 +1079,7 @@ fn main() {
     }
     // A capture is always available for paste. Review may replace it with an
     // edited image, but Save or Review must never leave the clipboard empty.
-    let copied_initial = copy_to_clipboard(&temp).is_ok();
+    let copied_initial = copy_to_clipboard(&temp);
     if review_flag || (save.is_none() && !copy) {
         let image = match image::open(&temp) {
             Ok(image) => image.to_rgba8(),
@@ -1093,8 +1105,8 @@ fn main() {
         }
         return;
     }
-    if !copied_initial {
-        fail("copy failed: cannot start xclip");
+    if let Err(error) = copied_initial {
+        fail(&format!("copy failed: {error}"));
     }
     println!("{}", temp.display());
     if notify_enabled {
