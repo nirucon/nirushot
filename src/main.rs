@@ -1,10 +1,11 @@
 use std::{
     env,
     fs::File,
+    io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 fn run(program: &str, args: &[String]) -> Result<String, String> {
@@ -957,25 +958,40 @@ fn atomic_save(image: &RgbaImage, path: &Path) -> Result<(), String> {
 
 fn copy_to_clipboard(path: &Path) -> Result<(), String> {
     let input = File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
-    // Wait for xclip itself. It daemonises once it owns the selection, so this
-    // returns promptly on success; spawning and forgetting treated a launch
-    // that immediately failed as a successful copy.
-    let output = Command::new("xclip")
+    let mut child = Command::new("xclip")
         .args(["-selection", "clipboard", "-t", "image/png", "-i"])
         .stdin(Stdio::from(input))
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .output()
+        .spawn()
         .map_err(|e| format!("cannot start xclip: {e}"))?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let detail = String::from_utf8_lossy(&output.stderr);
-    let detail = detail.trim();
-    if detail.is_empty() {
-        Err(format!("xclip exited with {}", output.status))
-    } else {
-        Err(format!("xclip exited with {}: {detail}", output.status))
+    // xclip usually stays alive while it owns the selection, so waiting for it
+    // to exit would hang the screenshot. Give it a short window: an immediate
+    // unsuccessful exit is a real failure, while a process still running after
+    // that window is the normal clipboard owner.
+    let deadline = Instant::now() + Duration::from_millis(250);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => {
+                let mut detail = String::new();
+                if let Some(mut stderr) = child.stderr.take() {
+                    let _ = stderr.read_to_string(&mut detail);
+                }
+                let detail = detail.trim();
+                return if detail.is_empty() {
+                    Err(format!("xclip exited with {status}"))
+                } else {
+                    Err(format!("xclip exited with {status}: {detail}"))
+                };
+            }
+            Ok(None) => {}
+            Err(error) => return Err(format!("could not wait for xclip: {error}")),
+        }
+        if Instant::now() >= deadline {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(10));
     }
 }
 
