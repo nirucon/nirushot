@@ -22,8 +22,8 @@ use x11rb::{
 
 use crate::{
     atomic_save, copy_to_clipboard, default_path, draw_text,
-    edit::{fill_rect, op_from_drag, Change, Editor, MEDIUM, RED},
-    keys::{self, Keymap},
+    edit::{fill_rect, op_from_drag, text_area, Change, Editor, Op, MEDIUM, RED, TEXT_SIZES},
+    keys::{self, keysym_char, Keymap},
     load_font, load_theme, monitor, notify, rgb, text_width,
     view::{
         draw_preview, intersect, next_event, preview_bounds, put_bytes, to_x_bytes, view_layout,
@@ -44,15 +44,20 @@ pub struct Output<'a> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Item {
     Tool(u8),
+    Size(usize),
     Undo,
 }
 
-const TOOLS: [(u8, &str); 4] = [
+const TOOLS: [(u8, &str); 5] = [
     (b'c', "Crop"),
     (b'r', "Rect"),
     (b'a', "Arrow"),
     (b'm', "Mask"),
+    (b't', "Text"),
 ];
+
+const SIZE_LABELS: [&str; 3] = ["S", "M", "L"];
+const CELL: f32 = 22.0;
 
 /// Toolbar items with their x position and width.
 fn toolbar_items(font: &FontArc) -> Vec<(f32, f32, Item)> {
@@ -64,6 +69,11 @@ fn toolbar_items(font: &FontArc) -> Vec<(f32, f32, Item)> {
         pos += width + 8.0;
     }
     pos += 8.0;
+    for i in 0..SIZE_LABELS.len() {
+        items.push((pos, CELL, Item::Size(i)));
+        pos += CELL + 2.0;
+    }
+    pos += 14.0;
     let width = 28.0 + text_width(font, 12.0, "Undo");
     items.push((pos, width, Item::Undo));
     items
@@ -80,6 +90,14 @@ struct ToolbarState {
     tool: u8,
     zoom: f32,
     can_undo: bool,
+    text_size: usize,
+}
+
+fn outline(canvas: &mut RgbaImage, x: i32, w: i32, colour: Rgba<u8>) {
+    fill_rect(canvas, x, 13, w, 1, colour);
+    fill_rect(canvas, x, 38, w, 1, colour);
+    fill_rect(canvas, x, 13, 1, 26, colour);
+    fill_rect(canvas, x + w - 1, 13, 1, 26, colour);
 }
 
 fn draw_toolbar(canvas: &mut RgbaImage, theme: &Theme, font: Option<&FontArc>, s: &ToolbarState) {
@@ -101,43 +119,49 @@ fn draw_toolbar(canvas: &mut RgbaImage, theme: &Theme, font: Option<&FontArc>, s
     );
     let mut end = 0.0f32;
     for (pos, width, item) in toolbar_items(font) {
-        let (label, active, enabled) = match item {
+        let (x, w) = (pos as i32, width as i32);
+        match item {
             Item::Tool(key) => {
-                let label = TOOLS.iter().find(|(k, _)| *k == key).map(|(_, l)| *l);
-                (label.unwrap_or(""), s.tool == key, true)
+                let label = TOOLS
+                    .iter()
+                    .find(|(k, _)| *k == key)
+                    .map(|(_, l)| *l)
+                    .unwrap_or("");
+                let active = s.tool == key;
+                if active {
+                    fill_rect(canvas, x, 13, w, 26, rgb(theme.foreground));
+                }
+                let colour = if active {
+                    theme.background
+                } else {
+                    theme.muted
+                };
+                draw_text(canvas, font, 12.0, pos + 9.0, 20.0, label, rgb(colour));
             }
-            Item::Undo => ("Undo", false, s.can_undo),
-        };
-        if active {
-            fill_rect(
-                canvas,
-                pos as i32,
-                13,
-                width as i32,
-                26,
-                rgb(theme.foreground),
-            );
-        } else if item == Item::Undo {
-            fill_rect(canvas, pos as i32, 13, width as i32, 1, rgb(theme.border));
-            fill_rect(canvas, pos as i32, 38, width as i32, 1, rgb(theme.border));
-            fill_rect(canvas, pos as i32, 13, 1, 26, rgb(theme.border));
-            fill_rect(
-                canvas,
-                (pos + width) as i32 - 1,
-                13,
-                1,
-                26,
-                rgb(theme.border),
-            );
+            Item::Size(i) => {
+                let label = SIZE_LABELS[i];
+                let active = s.text_size == i;
+                if active {
+                    fill_rect(canvas, x, 13, w, 26, rgb(theme.foreground));
+                }
+                let colour = if active {
+                    theme.background
+                } else {
+                    theme.muted
+                };
+                let lx = pos + (CELL - text_width(font, 12.0, label)) / 2.0;
+                draw_text(canvas, font, 12.0, lx, 20.0, label, rgb(colour));
+            }
+            Item::Undo => {
+                outline(canvas, x, w, rgb(theme.border));
+                let colour = if s.can_undo {
+                    theme.foreground
+                } else {
+                    theme.muted
+                };
+                draw_text(canvas, font, 12.0, pos + 9.0, 20.0, "Undo", rgb(colour));
+            }
         }
-        let colour = if active {
-            rgb(theme.background)
-        } else if enabled && item == Item::Undo {
-            rgb(theme.foreground)
-        } else {
-            rgb(theme.muted)
-        };
-        draw_text(canvas, font, 12.0, pos + 9.0, 20.0, label, colour);
         end = pos + width;
     }
     let zoom_label = if (s.zoom - 1.0).abs() < 0.01 {
@@ -163,6 +187,13 @@ fn draw_toolbar(canvas: &mut RgbaImage, theme: &Theme, font: Option<&FontArc>, s
         draw_text(canvas, font, 11.0, hint_x, 7.0, line1, rgb(theme.muted));
         draw_text(canvas, font, 11.0, hint_x, 27.0, line2, rgb(theme.muted));
     }
+}
+
+/// Text being typed, before Enter turns it into an operation.
+struct Typing {
+    /// Top-left of the line box, in image coordinates.
+    at: (i32, i32),
+    text: String,
 }
 
 /// The composed frame lives in a server pixmap the size of the window.
@@ -230,6 +261,8 @@ struct Ui<'a> {
     win_h: u32,
     /// Start and current point of an annotation drag, in window coordinates.
     drag: Option<((i32, i32), (i32, i32))>,
+    typing: Option<Typing>,
+    text_size: usize,
     pan_drag: Option<(i32, i32, f32, f32)>,
     cache: ViewCache,
     fine: bool,
@@ -239,7 +272,8 @@ struct Ui<'a> {
     /// Image areas changed by the last edit, re-scaled on their own.
     changed: Vec<Area>,
     need_preview: bool,
-    drawn: Option<Area>,
+    /// Window areas the drag preview and the text being typed cover.
+    drawn: Vec<Area>,
 }
 
 pub fn review(image: RgbaImage, out: Output<'_>) -> Result<(), String> {
@@ -346,6 +380,7 @@ pub fn review(image: RgbaImage, out: Output<'_>) -> Result<(), String> {
     let refine = RefineTimer::new(Arc::clone(&c), win, refine_atom);
     let layout = view_layout(image.dimensions(), (win_w, win_h), 1.0, (0.0, 0.0));
     let keymap = Keymap::load(&c);
+    let font = load_font();
     let mut ui = Ui {
         c,
         win,
@@ -359,16 +394,18 @@ pub fn review(image: RgbaImage, out: Output<'_>) -> Result<(), String> {
         frame,
         refine,
         theme: load_theme(),
-        font: load_font(),
+        font: font.clone(),
         out,
         keymap,
-        editor: Editor::new(image),
+        editor: Editor::new(image, font),
         tool: b'0',
         zoom: 1.0,
         pan: (0.0, 0.0),
         win_w,
         win_h,
         drag: None,
+        typing: None,
+        text_size: 1,
         pan_drag: None,
         cache: ViewCache::default(),
         fine: false,
@@ -377,7 +414,7 @@ pub fn review(image: RgbaImage, out: Output<'_>) -> Result<(), String> {
         need_toolbar: true,
         changed: Vec::new(),
         need_preview: false,
-        drawn: None,
+        drawn: Vec::new(),
     };
     ui.run()
 }
@@ -408,6 +445,7 @@ impl Ui<'_> {
                 tool: self.tool,
                 zoom: self.zoom,
                 can_undo: self.editor.can_undo(),
+                text_size: self.text_size,
             };
             draw_toolbar(
                 &mut self.frame.toolbar,
@@ -466,13 +504,14 @@ impl Ui<'_> {
                 .set_clip_rectangles(ClipOrdering::UNSORTED, self.preview_gc, 0, 0, &[clip])
                 .map_err(Self::err)?;
             self.changed.clear();
-            self.drawn = None;
+            self.drawn.clear();
             self.need_frame = false;
             self.need_preview = true;
         }
         if self.need_preview {
-            if let Some(area) = self.drawn.take() {
-                if let Some(area) = intersect(area, (0, 0, self.win_w as i32, self.win_h as i32)) {
+            let window = (0, 0, self.win_w as i32, self.win_h as i32);
+            for area in std::mem::take(&mut self.drawn) {
+                if let Some(area) = intersect(area, window) {
                     self.copy_to_window(area)?;
                 }
             }
@@ -490,19 +529,79 @@ impl Ui<'_> {
                     stroke: MEDIUM,
                 };
                 draw_preview(&self.c, self.win, self.preview_gc, &preview)?;
-                self.drawn = Some(preview_bounds(&preview));
+                self.drawn.push(preview_bounds(&preview));
             }
+            self.draw_typing()?;
             self.need_preview = false;
         }
         Ok(())
     }
 
-    fn pixel(&self, p: &Rgba<u8>) -> [u8; 4] {
-        if self.lsb_first {
-            [p[2], p[1], p[0], 255]
-        } else {
-            [p[0], p[1], p[2], 255]
+    /// Show the text being typed, with a caret, over the view.
+    fn draw_typing(&mut self) -> Result<(), String> {
+        let (Some(typing), Some(font)) = (&self.typing, &self.font) else {
+            return Ok(());
+        };
+        let size = TEXT_SIZES[self.text_size] as f32 * self.layout.scale;
+        let (wx, wy) = self
+            .layout
+            .window_point(typing.at.0 as f32, typing.at.1 as f32);
+        let (wx, wy) = (wx.round() as i32, wy.round() as i32);
+        let (ax, ay, aw, ah) = text_area(font, size, wx, wy, &typing.text);
+        let caret = wx + text_width(font, size, &typing.text).round() as i32 + 1;
+        let caret_w = (size / 14.0).ceil().max(1.0) as i32;
+        let x1 = (ax + aw).max(caret + caret_w + 2);
+        let y1 = (ay + ah).max(wy + size.ceil() as i32 + 2);
+        let area = (ax.min(wx) - 2, ay.min(wy) - 2, 0, 0);
+        let area = (area.0, area.1, x1 - area.0, y1 - area.1);
+        let Some(area) = intersect(area, image_area(self.win_w, self.win_h)) else {
+            return Ok(());
+        };
+        let mut canvas = self.area_pixels(area);
+        let colour = RED;
+        let (ox, oy) = ((wx - area.0) as f32, (wy - area.1) as f32);
+        draw_text(&mut canvas, font, size, ox, oy, &typing.text, colour);
+        fill_rect(
+            &mut canvas,
+            caret - area.0,
+            wy - area.1,
+            caret_w,
+            size.ceil() as i32,
+            colour,
+        );
+        to_x_bytes(self.lsb_first, &canvas, &mut self.frame.bytes);
+        put_bytes(
+            &self.c,
+            self.win,
+            self.gc,
+            self.depth,
+            area.0 as i16,
+            area.1 as i16,
+            area.2 as u32,
+            area.3 as u32,
+            &self.frame.bytes,
+        )?;
+        self.drawn.push(area);
+        Ok(())
+    }
+
+    /// Turn the text being typed into an operation.
+    fn commit_text(&mut self) {
+        let Some(typing) = self.typing.take() else {
+            return;
+        };
+        self.need_preview = true;
+        if typing.text.trim().is_empty() {
+            return;
         }
+        let op = Op::Text {
+            x: typing.at.0,
+            y: typing.at.1,
+            text: typing.text,
+            colour: RED,
+            size: TEXT_SIZES[self.text_size],
+        };
+        self.edit(|editor| Some(editor.push(op)));
     }
 
     fn copy_to_window(&self, (x, y, w, h): Area) -> Result<(), String> {
@@ -522,41 +621,38 @@ impl Ui<'_> {
         Ok(())
     }
 
-    /// Paint window `area` (background plus cached view) into the pixmap
-    /// and copy it to the window.
-    fn paint_area(&mut self, area: Area) -> Result<(), String> {
+    /// Window `area` as it looks without previews: background and view.
+    fn area_pixels(&self, area: Area) -> RgbaImage {
         let (ax, ay, aw, ah) = area;
-        if aw <= 0 || ah <= 0 {
-            return Ok(());
-        }
-        let bg = self.pixel(&rgb(self.theme.background));
-        let mut bytes = std::mem::take(&mut self.frame.bytes);
-        bytes.clear();
-        bytes.resize(aw as usize * ah as usize * 4, 0);
-        for px in bytes.chunks_exact_mut(4) {
-            px.copy_from_slice(&bg);
-        }
+        let mut canvas = RgbaImage::from_pixel(aw as u32, ah as u32, rgb(self.theme.background));
         if let Some(key) = self.cache.key {
             let (ox, oy) = self.layout.origin();
             let placed = (ox + key.rect.0, oy + key.rect.1, key.rect.2, key.rect.3);
             if let Some((x, y, w, h)) = intersect(placed, area) {
                 let src = self.cache.image.as_raw();
-                let stride = self.cache.image.width() as usize * 4;
-                let w = w as usize;
+                let src_stride = self.cache.image.width() as usize * 4;
+                let dst_stride = aw as usize * 4;
+                let dst = &mut *canvas;
+                let len = w as usize * 4;
                 for row in 0..h {
-                    let sy = (y - placed.1 + row) as usize;
-                    let sx = (x - placed.0) as usize;
-                    let from = &src[sy * stride + sx * 4..sy * stride + (sx + w) * 4];
-                    let dy = (y - ay + row) as usize;
-                    let dx = (x - ax) as usize;
-                    let start = (dy * aw as usize + dx) * 4;
-                    let to = &mut bytes[start..start + w * 4];
-                    for (d, s) in to.chunks_exact_mut(4).zip(from.chunks_exact(4)) {
-                        d.copy_from_slice(&self.pixel(&Rgba([s[0], s[1], s[2], 255])));
-                    }
+                    let s0 =
+                        (y - placed.1 + row) as usize * src_stride + (x - placed.0) as usize * 4;
+                    let d0 = (y - ay + row) as usize * dst_stride + (x - ax) as usize * 4;
+                    dst[d0..d0 + len].copy_from_slice(&src[s0..s0 + len]);
                 }
             }
         }
+        canvas
+    }
+
+    /// Paint window `area` into the pixmap and copy it to the window.
+    fn paint_area(&mut self, area: Area) -> Result<(), String> {
+        let (ax, ay, aw, ah) = area;
+        if aw <= 0 || ah <= 0 {
+            return Ok(());
+        }
+        let canvas = self.area_pixels(area);
+        to_x_bytes(self.lsb_first, &canvas, &mut self.frame.bytes);
         put_bytes(
             &self.c,
             self.frame.pixmap,
@@ -566,9 +662,8 @@ impl Ui<'_> {
             ay as i16,
             aw as u32,
             ah as u32,
-            &bytes,
+            &self.frame.bytes,
         )?;
-        self.frame.bytes = bytes;
         self.copy_to_window(area)
     }
 
@@ -626,11 +721,13 @@ impl Ui<'_> {
     }
 
     fn set_tool(&mut self, tool: u8) {
+        self.commit_text();
         self.tool = tool;
         self.need_toolbar = true;
     }
 
     fn save(&mut self) -> Result<Flow, String> {
+        self.commit_text();
         let path = self
             .out
             .save
@@ -646,6 +743,7 @@ impl Ui<'_> {
     }
 
     fn copy(&mut self) -> Result<Flow, String> {
+        self.commit_text();
         let temp = self.out.temp;
         self.editor
             .image()
@@ -660,6 +758,7 @@ impl Ui<'_> {
     }
 
     fn share(&mut self) -> Result<Flow, String> {
+        self.commit_text();
         let state = env::var_os("XDG_STATE_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
@@ -697,7 +796,7 @@ impl Ui<'_> {
         match event {
             Event::Expose(e) if e.window == win => {
                 self.copy_to_window((e.x as i32, e.y as i32, e.width as i32, e.height as i32))?;
-                if self.drawn.is_some() {
+                if !self.drawn.is_empty() {
                     self.need_preview = true;
                 }
             }
@@ -766,8 +865,30 @@ impl Ui<'_> {
             let hit = self.font.as_ref().and_then(|f| toolbar_hit(f, at.0));
             match hit {
                 Some(Item::Tool(tool)) => self.set_tool(tool),
-                Some(Item::Undo) => self.undo(),
+                Some(Item::Size(size)) => {
+                    self.text_size = size;
+                    self.need_toolbar = true;
+                    self.need_preview = true;
+                }
+                Some(Item::Undo) => {
+                    self.commit_text();
+                    self.undo();
+                }
                 None => {}
+            }
+            return;
+        }
+        if self.tool == b't' {
+            self.commit_text();
+            if self.font.is_some() {
+                let dims = self.editor.image().dimensions();
+                let (ix, iy) = self.layout.image_point(dims, at.0, at.1);
+                let half = TEXT_SIZES[self.text_size] as i32 / 2;
+                self.typing = Some(Typing {
+                    at: (ix, iy - half),
+                    text: String::new(),
+                });
+                self.need_preview = true;
             }
             return;
         }
@@ -803,6 +924,26 @@ impl Ui<'_> {
         let key = keys::shortcut(sym);
         let ctrl = e.state.contains(KeyButMask::CONTROL);
         let shift = e.state.contains(KeyButMask::SHIFT);
+        if let Some(typing) = self.typing.as_mut() {
+            if !ctrl {
+                match sym {
+                    0xff1b => self.typing = None,
+                    0xff0d | 0xff8d => self.commit_text(),
+                    0xff08 => {
+                        typing.text.pop();
+                    }
+                    _ => {
+                        if let Some(ch) = keysym_char(sym) {
+                            typing.text.push(ch);
+                        }
+                    }
+                }
+                self.need_preview = true;
+                return Ok(Flow::Continue);
+            }
+            // Ctrl shortcuts act on the finished text.
+            self.commit_text();
+        }
         if ctrl {
             match key {
                 0x7a if shift => self.redo(),
@@ -824,6 +965,7 @@ impl Ui<'_> {
             0x72 => self.set_tool(b'r'),
             0x61 => self.set_tool(b'a'),
             0x6d => self.set_tool(b'm'),
+            0x74 if self.font.is_some() => self.set_tool(b't'),
             0x76 => self.set_tool(b'0'),
             0x2b | 0x3d | 0xffab => self.set_zoom((self.zoom * 1.25).min(8.0)),
             0x2d | 0xffad => self.set_zoom((self.zoom / 1.25).max(0.1)),

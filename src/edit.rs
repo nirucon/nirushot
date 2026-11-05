@@ -6,6 +6,7 @@
 //! image is that list rendered over the original, and undo/redo step through
 //! earlier lists.
 
+use ab_glyph::{point, Font, FontArc, PxScale, ScaleFont};
 use image::{Rgba, RgbaImage};
 
 use crate::view::Area;
@@ -50,7 +51,18 @@ pub enum Op {
         w: i32,
         h: i32,
     },
+    /// One line of text; (x, y) is the top-left of its line box.
+    Text {
+        x: i32,
+        y: i32,
+        text: String,
+        colour: Rgba<u8>,
+        size: u32,
+    },
 }
+
+/// Text sizes for S, M and L, in image pixels.
+pub const TEXT_SIZES: [u32; 3] = [20, 32, 48];
 
 impl Op {
     fn is_crop(&self) -> bool {
@@ -58,8 +70,17 @@ impl Op {
     }
 
     /// Image areas this operation draws into (unused for a crop).
-    pub fn areas(&self) -> Vec<Area> {
+    pub fn areas(&self, font: Option<&FontArc>) -> Vec<Area> {
         match *self {
+            Op::Text {
+                x,
+                y,
+                ref text,
+                size,
+                ..
+            } => font
+                .map(|font| vec![text_area(font, size as f32, x, y, text)])
+                .unwrap_or_default(),
             Op::Crop { x, y, w, h } => vec![(x as i32, y as i32, w as i32, h as i32)],
             Op::Rect {
                 x, y, w, h, stroke, ..
@@ -92,8 +113,19 @@ impl Op {
         }
     }
 
-    fn draw(&self, image: &mut RgbaImage) {
+    fn draw(&self, image: &mut RgbaImage, font: Option<&FontArc>) {
         match *self {
+            Op::Text {
+                x,
+                y,
+                ref text,
+                colour,
+                size,
+            } => {
+                if let Some(font) = font {
+                    draw_text(image, font, size as f32, x as f32, y as f32, text, colour);
+                }
+            }
             Op::Crop { .. } => {}
             Op::Rect {
                 x,
@@ -168,20 +200,92 @@ pub fn op_from_drag(
 }
 
 /// Render `ops` over `original`.
-pub fn render(original: &RgbaImage, ops: &[Op]) -> RgbaImage {
+pub fn render(original: &RgbaImage, ops: &[Op], font: Option<&FontArc>) -> RgbaImage {
     let mut image = original.clone();
     for op in ops {
-        apply(&mut image, op);
+        apply(&mut image, op, font);
     }
     image
 }
 
-fn apply(image: &mut RgbaImage, op: &Op) {
+fn apply(image: &mut RgbaImage, op: &Op, font: Option<&FontArc>) {
     match *op {
         Op::Crop { x, y, w, h } => {
             *image = image::imageops::crop_imm(image, x, y, w, h).to_image();
         }
-        _ => op.draw(image),
+        _ => op.draw(image, font),
+    }
+}
+
+/// Image area covered by `text` drawn at (x, y): every glyph outline plus
+/// the line box.
+pub fn text_area(font: &FontArc, size: f32, x: i32, y: i32, text: &str) -> Area {
+    let scale = PxScale::from(size);
+    let scaled = font.as_scaled(scale);
+    let baseline = y as f32 + scaled.ascent();
+    let (mut x0, mut y0) = (x as f32, y as f32);
+    let mut x1 = x as f32 + text_width(font, size, text);
+    let mut y1 = baseline - scaled.descent();
+    let mut caret = x as f32;
+    for ch in text.chars() {
+        let id = font.glyph_id(ch);
+        if let Some(outline) =
+            font.outline_glyph(id.with_scale_and_position(scale, point(caret, baseline)))
+        {
+            let b = outline.px_bounds();
+            x0 = x0.min(b.min.x);
+            y0 = y0.min(b.min.y);
+            x1 = x1.max(b.max.x);
+            y1 = y1.max(b.max.y);
+        }
+        caret += scaled.h_advance(id);
+    }
+    let (x0, y0) = (x0.floor() as i32 - 1, y0.floor() as i32 - 1);
+    let (x1, y1) = (x1.ceil() as i32 + 1, y1.ceil() as i32 + 1);
+    (x0, y0, x1 - x0, y1 - y0)
+}
+
+pub fn text_width(font: &FontArc, size: f32, text: &str) -> f32 {
+    let scaled = font.as_scaled(PxScale::from(size));
+    text.chars()
+        .map(|ch| scaled.h_advance(font.glyph_id(ch)))
+        .sum()
+}
+
+/// Anti-aliased text with its line box's top-left at (x, y).
+pub fn draw_text(
+    image: &mut RgbaImage,
+    font: &FontArc,
+    size: f32,
+    x: f32,
+    y: f32,
+    text: &str,
+    colour: Rgba<u8>,
+) {
+    let scale = PxScale::from(size);
+    let scaled = font.as_scaled(scale);
+    let baseline = y + scaled.ascent();
+    let mut caret = x;
+    for ch in text.chars() {
+        let id = font.glyph_id(ch);
+        let glyph = id.with_scale_and_position(scale, point(caret, baseline));
+        if let Some(outline) = font.outline_glyph(glyph) {
+            let bounds = outline.px_bounds();
+            outline.draw(|gx, gy, coverage| {
+                let px = bounds.min.x as i32 + gx as i32;
+                let py = bounds.min.y as i32 + gy as i32;
+                if px < 0 || py < 0 || px as u32 >= image.width() || py as u32 >= image.height() {
+                    return;
+                }
+                let dst = image.get_pixel_mut(px as u32, py as u32);
+                let alpha = coverage;
+                for i in 0..3 {
+                    dst[i] =
+                        (colour[i] as f32 * alpha + dst[i] as f32 * (1.0 - alpha)).round() as u8;
+                }
+            });
+        }
+        caret += scaled.h_advance(id);
     }
 }
 
@@ -201,12 +305,14 @@ pub struct Editor {
     redo: Vec<Vec<Op>>,
     image: RgbaImage,
     generation: u64,
+    font: Option<FontArc>,
 }
 
 impl Editor {
-    pub fn new(original: RgbaImage) -> Self {
+    pub fn new(original: RgbaImage, font: Option<FontArc>) -> Self {
         let image = original.clone();
         Self {
+            font,
             original,
             ops: Vec::new(),
             undo: Vec::new(),
@@ -243,11 +349,11 @@ impl Editor {
         self.generation += 1;
         // Drawing on top of the current result is the same as rendering
         // the whole list again.
-        apply(&mut self.image, &op);
+        apply(&mut self.image, &op, self.font.as_ref());
         if op.is_crop() {
             Change::Full
         } else {
-            Change::Areas(op.areas())
+            Change::Areas(op.areas(self.font.as_ref()))
         }
     }
 
@@ -277,7 +383,7 @@ impl Editor {
     /// Re-render after `self.ops` replaced `before`, and describe the change.
     fn change_between(&mut self, before: &[Op]) -> Change {
         self.generation += 1;
-        self.image = render(&self.original, &self.ops);
+        self.image = render(&self.original, &self.ops, self.font.as_ref());
         let (short, long) = if before.len() < self.ops.len() {
             (before, self.ops.as_slice())
         } else {
@@ -286,7 +392,13 @@ impl Editor {
         // Adding or removing annotations after the last crop keeps the size
         // and touches only their areas.
         if long.starts_with(short) && long[short.len()..].iter().all(|op| !op.is_crop()) {
-            Change::Areas(long[short.len()..].iter().flat_map(Op::areas).collect())
+            let font = self.font.as_ref();
+            Change::Areas(
+                long[short.len()..]
+                    .iter()
+                    .flat_map(|op| op.areas(font))
+                    .collect(),
+            )
         } else {
             Change::Full
         }
@@ -526,6 +638,84 @@ mod tests {
         }
     }
 
+    impl Editor {
+        fn new_test(original: RgbaImage) -> Self {
+            Editor::new(original, None)
+        }
+    }
+
+    fn test_font() -> Option<FontArc> {
+        [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+            "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSansMono.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+        ]
+        .iter()
+        .find_map(|p| std::fs::read(p).ok())
+        .and_then(|data| FontArc::try_from_vec(data).ok())
+    }
+
+    #[test]
+    fn text_stays_inside_its_bounds() {
+        let Some(font) = test_font() else {
+            eprintln!("no test font installed; skipped");
+            return;
+        };
+        for (size, text) in [(20, "Hello, världen! @€"), (48, "jgpqy ÅÄÖ |"), (32, "→ x")] {
+            let blank = RgbaImage::from_pixel(600, 120, Rgba([255, 255, 255, 255]));
+            let mut image = blank.clone();
+            let (x, y) = (40, 30);
+            draw_text(
+                &mut image,
+                &font,
+                size as f32,
+                x as f32,
+                y as f32,
+                text,
+                RED,
+            );
+            let (ax, ay, aw, ah) = text_area(&font, size as f32, x, y, text);
+            let mut inked = 0;
+            for (px, py, p) in image.enumerate_pixels() {
+                if p != blank.get_pixel(px, py) {
+                    inked += 1;
+                    let (px, py) = (px as i32, py as i32);
+                    assert!(
+                        px >= ax && px < ax + aw && py >= ay && py < ay + ah,
+                        "{text:?} pixel {px},{py} outside {:?}",
+                        (ax, ay, aw, ah)
+                    );
+                }
+            }
+            assert!(inked > 20, "{text:?} drew nothing");
+            assert!(ah >= size && ah < size * 2);
+        }
+    }
+
+    #[test]
+    fn text_is_an_undoable_operation() {
+        let Some(font) = test_font() else {
+            return;
+        };
+        let original = pattern(300, 100);
+        let mut editor = Editor::new(original.clone(), Some(font.clone()));
+        let op = Op::Text {
+            x: 10,
+            y: 10,
+            text: "Note".into(),
+            colour: RED,
+            size: TEXT_SIZES[1],
+        };
+        let change = editor.push(op.clone());
+        assert_eq!(change, Change::Areas(op.areas(Some(&font))));
+        assert!(*editor.image() != original);
+        editor.undo().unwrap();
+        assert!(*editor.image() == original);
+        editor.redo().unwrap();
+        assert!(*editor.image() == render(&original, &[op], Some(&font)));
+    }
+
     type Drag = (u8, (i32, i32), (i32, i32));
 
     const SESSION: &[Drag] = &[
@@ -544,7 +734,7 @@ mod tests {
     fn run(session: &[Drag]) -> (RgbaImage, Editor) {
         let original = pattern(260, 190);
         let mut reference = original.clone();
-        let mut editor = Editor::new(original);
+        let mut editor = Editor::new(original, None);
         for &(tool, a, b) in session {
             old::apply(&mut reference, tool, a, b);
             if let Some(op) = op_from_drag(tool, a, b, editor.image().dimensions(), RED, MEDIUM) {
@@ -558,7 +748,7 @@ mod tests {
     fn export_matches_the_destructive_path() {
         let (reference, editor) = run(SESSION);
         assert!(*editor.image() == reference);
-        assert!(render(&editor.original, editor.ops()) == reference);
+        assert!(render(&editor.original, editor.ops(), None) == reference);
     }
 
     #[test]
@@ -572,6 +762,7 @@ mod tests {
                 Op::Rect { .. } => 'r',
                 Op::Arrow { .. } => 'a',
                 Op::Mask { .. } => 'm',
+                Op::Text { .. } => 't',
             })
             .collect();
         assert_eq!(kinds.iter().collect::<String>(), "ramcramcr");
@@ -616,10 +807,10 @@ mod tests {
 
     #[test]
     fn annotation_undo_reports_only_its_area() {
-        let mut editor = Editor::new(pattern(100, 100));
+        let mut editor = Editor::new_test(pattern(100, 100));
         let op = op_from_drag(b'r', (10, 10), (50, 40), (100, 100), RED, MEDIUM).unwrap();
-        assert_eq!(editor.push(op.clone()), Change::Areas(op.areas()));
-        assert_eq!(editor.undo(), Some(Change::Areas(op.areas())));
+        assert_eq!(editor.push(op.clone()), Change::Areas(op.areas(None)));
+        assert_eq!(editor.undo(), Some(Change::Areas(op.areas(None))));
         let crop = op_from_drag(b'c', (10, 10), (50, 40), (100, 100), RED, MEDIUM).unwrap();
         assert_eq!(editor.push(crop), Change::Full);
         assert_eq!(editor.undo(), Some(Change::Full));
@@ -627,7 +818,7 @@ mod tests {
 
     #[test]
     fn history_is_bounded() {
-        let mut editor = Editor::new(pattern(20, 20));
+        let mut editor = Editor::new_test(pattern(20, 20));
         for i in 0..(UNDO_LIMIT + 30) {
             editor.push(Op::Mask {
                 x: (i % 20) as i32,

@@ -28,6 +28,8 @@ image. Cancel leaves no file, but the initial capture remains pasteable.
 - `r` then drag: red rectangle
 - `a` then drag: red arrow
 - `m` then drag: opaque black mask
+- `t` then click: type one line of text; Enter places it, Escape cancels it.
+  S/M/L in the toolbar pick the size; the theme font is used
 - `v`: view/pan mode; drag the image or middle-drag to pan
 - Mouse wheel or `+`/`-`: zoom; `0`: fit
 - Ctrl+Z or the Undo button: undo; Ctrl+Shift+Z or Ctrl+Y: redo
@@ -39,8 +41,8 @@ image. Cancel leaves no file, but the initial capture remains pasteable.
 
 ## How editing works
 
-The captured image is never changed. Every crop, rectangle, arrow and mask
-is an operation in an ordered list, in the coordinates of the image it
+The captured image is never changed. Every crop, rectangle, arrow, mask
+and text is an operation in an ordered list, in the coordinates of the image it
 applies to (a crop starts new coordinates for what follows). What the dialog
 shows, and what Save, Copy and Share export, is that list drawn over the
 untouched capture. Undo and redo step through earlier lists, so a wrong crop

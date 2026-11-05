@@ -69,7 +69,6 @@ impl Layout {
     }
 
     /// Image coordinates to window coordinates.
-    #[allow(dead_code)]
     pub fn window_point(self, x: f32, y: f32) -> (f32, f32) {
         (self.x + x * self.scale, self.y + y * self.scale)
     }

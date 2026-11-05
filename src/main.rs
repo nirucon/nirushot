@@ -34,7 +34,7 @@ fn active_window() -> Result<String, String> {
     Ok(id.to_string())
 }
 
-use ab_glyph::{point, Font, FontArc, PxScale, ScaleFont};
+use ab_glyph::FontArc;
 use image::{Rgba, RgbaImage};
 
 fn notify(path: &str, copied: bool) {
@@ -260,48 +260,7 @@ fn load_font() -> Option<FontArc> {
     })
 }
 
-fn text_width(font: &FontArc, size: f32, text: &str) -> f32 {
-    let scaled = font.as_scaled(PxScale::from(size));
-    text.chars()
-        .map(|ch| scaled.h_advance(font.glyph_id(ch)))
-        .sum()
-}
-
-fn draw_text(
-    image: &mut RgbaImage,
-    font: &FontArc,
-    size: f32,
-    x: f32,
-    y: f32,
-    text: &str,
-    colour: Rgba<u8>,
-) {
-    let scale = PxScale::from(size);
-    let scaled = font.as_scaled(scale);
-    let baseline = y + scaled.ascent();
-    let mut caret = x;
-    for ch in text.chars() {
-        let id = font.glyph_id(ch);
-        let glyph = id.with_scale_and_position(scale, point(caret, baseline));
-        if let Some(outline) = font.outline_glyph(glyph) {
-            let bounds = outline.px_bounds();
-            outline.draw(|gx, gy, coverage| {
-                let px = bounds.min.x as i32 + gx as i32;
-                let py = bounds.min.y as i32 + gy as i32;
-                if px < 0 || py < 0 || px as u32 >= image.width() || py as u32 >= image.height() {
-                    return;
-                }
-                let dst = image.get_pixel_mut(px as u32, py as u32);
-                let alpha = coverage;
-                for i in 0..3 {
-                    dst[i] =
-                        (colour[i] as f32 * alpha + dst[i] as f32 * (1.0 - alpha)).round() as u8;
-                }
-            });
-        }
-        caret += scaled.h_advance(id);
-    }
-}
+use edit::{draw_text, text_width};
 
 fn default_path() -> PathBuf {
     let home = std::env::var_os("HOME")

@@ -96,7 +96,6 @@ pub fn keyboard_symbol(syms: &[u32], state: KeyButMask) -> u32 {
 }
 
 /// The text a keysym types, if any.
-#[allow(dead_code)]
 pub fn keysym_char(sym: u32) -> Option<char> {
     match sym {
         0x20..=0x7e | 0xa0..=0xff => char::from_u32(sym),

@@ -388,3 +388,51 @@ fn h3_undo_and_redo_from_the_keyboard() {
     assert_eq!(redone.dimensions(), original.dimensions());
     assert!(redone != original, "redo brings the rectangle back");
 }
+
+#[test]
+#[ignore = "needs Xvfb and xdotool"]
+fn e1_text_is_typed_placed_and_cancelled() {
+    let (typed, original) = session(|r| {
+        r.key("t");
+        r.xdotool(&[
+            "mousemove".into(),
+            "--window".into(),
+            r.window.clone(),
+            "400".into(),
+            "400".into(),
+            "click".into(),
+            "1".into(),
+        ]);
+        r.xdotool(&["type".into(), "Hi @ 2".into()]);
+        r.key("Return");
+    });
+    let changed: Vec<(u32, u32)> = typed
+        .enumerate_pixels()
+        .filter(|(x, y, p)| *p != original.get_pixel(*x, *y))
+        .map(|(x, y, _)| (x, y))
+        .collect();
+    assert!(changed.len() > 50, "the text is in the export");
+    let xs = changed.iter().map(|p| p.0);
+    let ys = changed.iter().map(|p| p.1);
+    let (x0, x1) = (xs.clone().min().unwrap(), xs.max().unwrap());
+    let (y0, y1) = (ys.clone().min().unwrap(), ys.max().unwrap());
+    assert!(x1 - x0 < 200 && y1 - y0 < 60, "one line of M text");
+    let (cancelled, original) = session(|r| {
+        r.key("t");
+        r.xdotool(&[
+            "mousemove".into(),
+            "--window".into(),
+            r.window.clone(),
+            "400".into(),
+            "400".into(),
+            "click".into(),
+            "1".into(),
+        ]);
+        r.xdotool(&["type".into(), "gone".into()]);
+        r.key("Escape");
+    });
+    assert!(
+        cancelled == original,
+        "Esc cancels the text, not the review"
+    );
+}
