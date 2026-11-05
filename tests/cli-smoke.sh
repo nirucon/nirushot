@@ -3,8 +3,8 @@ set -eu
 BIN=${1:?usage: cli-smoke.sh BIN}
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT INT TERM
-export HOME=$T/home NIRUSHOT_FIXTURE=$T PATH=$T/bin:$PATH
-mkdir -p "$HOME" "$T/bin"
+export HOME=$T/home NIRUSHOT_FIXTURE=$T PATH=$T/bin:$PATH TMPDIR=$T/tmp
+mkdir -p "$HOME" "$T/bin" "$TMPDIR"
 printf '0\n' > "$T/notified"
 cat > "$T/bin/slop" <<'EOF'
 #!/bin/sh
@@ -71,4 +71,6 @@ grep -q 'xclip exited with' "$T/copy-fail.err" || {
   echo 'FAIL copy failure did not explain xclip' >&2
   exit 1
 }
-echo 'PASS: region/full capture, save, clipboard, failed-copy detection and notification'
+# No private capture directory may outlive a run, including a failed one.
+if ls "$TMPDIR"/nirushot-* >/dev/null 2>&1; then echo 'FAIL capture directory left behind' >&2; exit 1; fi
+echo 'PASS: region/full capture, save, clipboard, failed-copy detection, cleanup and notification'

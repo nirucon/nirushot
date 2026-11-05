@@ -27,10 +27,27 @@ struct Xvfb {
     display: String,
 }
 
+/// SIGTERM, so the server removes its lock file and socket; SIGKILL as a
+/// last resort.
+fn terminate(child: &mut Child) {
+    let _ = Command::new("kill")
+        .arg(child.id().to_string())
+        .stderr(Stdio::null())
+        .status();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if let Ok(Some(_)) = child.try_wait() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 impl Drop for Xvfb {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        terminate(&mut self.child);
     }
 }
 
@@ -135,8 +152,15 @@ struct Review {
 
 impl Drop for Review {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Ok(Some(_)) = self.child.try_wait() {
+            return;
+        }
+        // Escape discards and removes the private capture directory.
+        let _ = Command::new("xdotool")
+            .args(["key", "Escape"])
+            .env("DISPLAY", &self.display)
+            .status();
+        terminate(&mut self.child);
     }
 }
 
@@ -154,6 +178,7 @@ fn open_review(bin: &Path, x: &Xvfb, fixture: &Fixture, out: &Path) -> Review {
         .env("HOME", fixture.path("home"))
         .env("XDG_CONFIG_HOME", fixture.path("home/.config"))
         .env("NIRUSHOT_FIXTURE", fixture.dir.path())
+        .env("TMPDIR", fixture.dir.path())
         .stdout(Stdio::null())
         .spawn()
         .expect("start nirushot");
@@ -346,6 +371,10 @@ fn h1_open_review_does_not_block_a_locker_grab() {
         GrabStatus::SUCCESS,
         "GrabKeyboard with a review open"
     );
+    // Let the review have its keyboard back so Escape can close it.
+    c.ungrab_keyboard(x11rb::CURRENT_TIME).unwrap();
+    c.ungrab_pointer(x11rb::CURRENT_TIME).unwrap();
+    c.flush().unwrap();
     drop(review);
 }
 

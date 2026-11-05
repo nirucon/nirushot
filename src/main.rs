@@ -400,6 +400,13 @@ fn main() {
         .prefix("nirushot-")
         .tempdir()
         .unwrap_or_else(|e| fail(&format!("cannot create private temporary directory: {e}")));
+    // `fail` exits without running destructors: remove the private
+    // directory (and the capture in it) first.
+    let dir = tempdir.path().to_path_buf();
+    let fail_clean = |message: &str| -> ! {
+        let _ = std::fs::remove_dir_all(&dir);
+        fail(message)
+    };
     let temp = tempdir.path().join("capture.png");
     let mut maim = vec!["--quiet".to_string()];
     let mut hint = None;
@@ -421,7 +428,7 @@ fn main() {
                     println!("cancelled");
                     return;
                 }
-                Err(e) => fail(&format!("selection failed: {e}")),
+                Err(e) => fail_clean(&format!("selection failed: {e}")),
             };
             hint = monitor::geometry_centre(&geometry);
             maim.extend(["-g".into(), geometry]);
@@ -429,7 +436,7 @@ fn main() {
         "window" => {
             let id = match active_window() {
                 Ok(id) => id,
-                Err(e) => fail(&e),
+                Err(e) => fail_clean(&e),
             };
             maim.extend(["-i".into(), id]);
         }
@@ -437,7 +444,7 @@ fn main() {
     }
     maim.push(temp.to_string_lossy().to_string());
     if let Err(e) = run("maim", &maim) {
-        fail(&format!("capture failed: {e}"));
+        fail_clean(&format!("capture failed: {e}"));
     }
     // A capture is always available for paste. Review may replace it with an
     // edited image, but Save or Review must never leave the clipboard empty.
@@ -445,7 +452,7 @@ fn main() {
     if review_flag || (save.is_none() && !copy) {
         let image = match image::open(&temp) {
             Ok(image) => image.to_rgba8(),
-            Err(e) => fail(&format!("cannot read capture: {e}")),
+            Err(e) => fail_clean(&format!("cannot read capture: {e}")),
         };
         let output = review::Output {
             temp: &temp,
@@ -454,17 +461,17 @@ fn main() {
             hint,
         };
         if let Err(e) = review::review(image, output) {
-            fail(&e);
+            fail_clean(&e);
         }
         return;
     }
     if let Some(path) = save.as_deref() {
         let image = match image::open(&temp) {
             Ok(image) => image.to_rgba8(),
-            Err(e) => fail(&format!("cannot read capture: {e}")),
+            Err(e) => fail_clean(&format!("cannot read capture: {e}")),
         };
         if let Err(e) = atomic_save(&image, path) {
-            fail(&e);
+            fail_clean(&e);
         }
         let copied = copy_to_clipboard(path).is_ok();
         println!("{}", path.display());
@@ -474,7 +481,7 @@ fn main() {
         return;
     }
     if let Err(error) = copied_initial {
-        fail(&format!("copy failed: {error}"));
+        fail_clean(&format!("copy failed: {error}"));
     }
     println!("{}", temp.display());
     if notify_enabled {
