@@ -14,3 +14,17 @@ jobs:
       - run: cargo build --release --locked
       - run: sh tests/cli-smoke.sh target/release/nirushot
       - run: docker run --rm -v "$PWD":/src:ro koalaman/shellcheck:stable -S warning -s sh /src/install.sh /src/tests/cli-smoke.sh
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85
+      - run: cargo build --locked
+  xvfb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y xvfb xdotool fonts-dejavu-core
+      # Release mode: the H2 CPU budget is about the shipped binary.
+      - run: cargo test --release --locked --test xvfb -- --ignored --test-threads 1 --nocapture

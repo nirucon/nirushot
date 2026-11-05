@@ -456,8 +456,6 @@ fn intern_atom(c: &RustConnection, name: &str) -> Option<Atom> {
 }
 
 fn close_review(c: &RustConnection, win: Window, temp: &Path) {
-    let _ = c.ungrab_keyboard(x11rb::CURRENT_TIME);
-    let _ = c.ungrab_pointer(x11rb::CURRENT_TIME);
     let _ = std::fs::remove_file(temp);
     let _ = c.destroy_window(win);
     let _ = c.flush();
@@ -703,24 +701,11 @@ fn review(
                 put_image(&c, win, gc, &canvas)?;
             }
             Event::MapNotify(e) if e.window == win => {
+                // A normal focused dialog: no keyboard or pointer grab. An
+                // active grab here would stop NIRULOCK (or any locker) from
+                // taking input while a review is left open. Drags still get
+                // X's implicit button grab, which ends on release.
                 let _ = c.set_input_focus(InputFocus::PARENT, win, x11rb::CURRENT_TIME);
-                let _ = c.grab_keyboard(
-                    false,
-                    win,
-                    x11rb::CURRENT_TIME,
-                    GrabMode::ASYNC,
-                    GrabMode::ASYNC,
-                );
-                let _ = c.grab_pointer(
-                    false,
-                    win,
-                    EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION,
-                    GrabMode::ASYNC,
-                    GrabMode::ASYNC,
-                    x11rb::NONE,
-                    x11rb::NONE,
-                    x11rb::CURRENT_TIME,
-                );
                 c.flush().ok();
             }
             Event::ClientMessage(e)
