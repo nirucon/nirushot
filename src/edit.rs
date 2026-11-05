@@ -63,6 +63,15 @@ pub enum Op {
         w: i32,
         h: i32,
     },
+    /// Dim everything outside the rectangle to 50 %, to point at an area.
+    /// All highlights between two crops share one dimming, and annotations
+    /// are never dimmed.
+    Highlight {
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+    },
     /// One line of text; (x, y) is the top-left of its line box.
     Text {
         x: i32,
@@ -122,6 +131,8 @@ impl Op {
                 )]
             }
             Op::Mask { x, y, w, h } => vec![(x, y, w, h)],
+            // Dimming changes everything outside the rectangle.
+            Op::Highlight { .. } => vec![EVERYWHERE],
         }
     }
 
@@ -156,6 +167,8 @@ impl Op {
                 stroke,
             } => arrow(image, x0, y0, x1, y1, stroke, colour),
             Op::Mask { x, y, w, h } => fill_rect(image, x, y, w, h, BLACK),
+            // Applied for the whole segment by `render`.
+            Op::Highlight { .. } => {}
         }
     }
 }
@@ -199,6 +212,7 @@ pub fn op_from_drag(
             stroke,
         }),
         b'm' => Some(Op::Mask { x, y, w, h }),
+        b'h' => Some(Op::Highlight { x, y, w, h }),
         b'a' => Some(Op::Arrow {
             x0: ix0,
             y0: iy0,
@@ -211,13 +225,60 @@ pub fn op_from_drag(
     }
 }
 
+/// An area larger than any image, for edits that touch everything.
+const EVERYWHERE: Area = (-(1 << 20), -(1 << 20), 1 << 21, 1 << 21);
+
 /// Render `ops` over `original`.
+///
+/// Between two crops, the capture is first dimmed outside every highlight
+/// of that stretch, then the annotations are drawn in order.
 pub fn render(original: &RgbaImage, ops: &[Op], font: Option<&FontArc>) -> RgbaImage {
     let mut image = original.clone();
-    for op in ops {
-        apply(&mut image, op, font);
+    let mut start = 0;
+    loop {
+        let end = ops[start..]
+            .iter()
+            .position(Op::is_crop)
+            .map_or(ops.len(), |p| start + p);
+        let segment = &ops[start..end];
+        dim_outside(&mut image, &highlights(segment));
+        for op in segment {
+            op.draw(&mut image, font);
+        }
+        if end == ops.len() {
+            return image;
+        }
+        apply(&mut image, &ops[end], font);
+        start = end + 1;
     }
-    image
+}
+
+fn highlights(ops: &[Op]) -> Vec<Area> {
+    ops.iter()
+        .filter_map(|op| match *op {
+            Op::Highlight { x, y, w, h } => Some((x, y, w, h)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Halve every pixel outside all `keep` rectangles.
+pub fn dim_outside(image: &mut RgbaImage, keep: &[Area]) {
+    if keep.is_empty() {
+        return;
+    }
+    for (x, y, p) in image.enumerate_pixels_mut() {
+        let (x, y) = (x as i32, y as i32);
+        if keep
+            .iter()
+            .any(|&(kx, ky, kw, kh)| x >= kx && x < kx + kw && y >= ky && y < ky + kh)
+        {
+            continue;
+        }
+        for c in &mut p.0[..3] {
+            *c /= 2;
+        }
+    }
 }
 
 fn apply(image: &mut RgbaImage, op: &Op, font: Option<&FontArc>) {
@@ -359,6 +420,11 @@ impl Editor {
         self.ops = ops;
         self.redo.clear();
         self.generation += 1;
+        if matches!(op, Op::Highlight { .. }) {
+            // The dimming of this stretch changes: render it again.
+            self.image = render(&self.original, &self.ops, self.font.as_ref());
+            return Change::Areas(vec![EVERYWHERE]);
+        }
         // Drawing on top of the current result is the same as rendering
         // the whole list again.
         apply(&mut self.image, &op, self.font.as_ref());
@@ -793,6 +859,7 @@ mod tests {
                 Op::Arrow { .. } => 'a',
                 Op::Mask { .. } => 'm',
                 Op::Text { .. } => 't',
+                Op::Highlight { .. } => 'h',
             })
             .collect();
         assert_eq!(kinds.iter().collect::<String>(), "ramcramcr");
@@ -872,6 +939,65 @@ mod tests {
             h: 40,
         });
         assert_eq!(crops_only.delete_last(), None, "crops are not annotations");
+    }
+
+    #[test]
+    fn highlight_dims_outside_and_keeps_annotations_vivid() {
+        let grey = Rgba([200, 100, 50, 255]);
+        let blank = RgbaImage::from_pixel(100, 80, grey);
+        let ops = [
+            op_from_drag(b'r', (60, 50), (95, 75), (100, 80), RED, MEDIUM).unwrap(),
+            op_from_drag(b'h', (10, 10), (40, 30), (100, 80), RED, MEDIUM).unwrap(),
+            op_from_drag(b'h', (30, 20), (50, 40), (100, 80), RED, MEDIUM).unwrap(),
+        ];
+        let image = render(&blank, &ops, None);
+        assert_eq!(*image.get_pixel(15, 15), grey, "inside the first");
+        assert_eq!(*image.get_pixel(45, 35), grey, "inside the second");
+        assert_eq!(
+            *image.get_pixel(5, 70),
+            Rgba([100, 50, 25, 255]),
+            "outside both: 50 %, dimmed once"
+        );
+        assert_eq!(*image.get_pixel(60, 60), RED, "the rectangle is not dimmed");
+        let mut editor = Editor::new_test(blank.clone());
+        for op in ops {
+            editor.push(op);
+        }
+        assert!(
+            *editor.image() == image,
+            "incremental pushes render the same"
+        );
+        editor.undo().unwrap();
+        editor.undo().unwrap();
+        assert_eq!(*editor.image().get_pixel(5, 70), grey);
+    }
+
+    #[test]
+    fn a_crop_ends_the_highlighted_stretch() {
+        let grey = Rgba([200, 200, 200, 255]);
+        let blank = RgbaImage::from_pixel(100, 80, grey);
+        let ops = [
+            op_from_drag(b'h', (10, 10), (40, 30), (100, 80), RED, MEDIUM).unwrap(),
+            op_from_drag(b'c', (0, 0), (60, 50), (100, 80), RED, MEDIUM).unwrap(),
+            op_from_drag(b'h', (40, 30), (60, 50), (60, 50), RED, MEDIUM).unwrap(),
+        ];
+        let image = render(&blank, &ops, None);
+        assert_eq!(image.dimensions(), (60, 50));
+        assert_eq!(
+            *image.get_pixel(45, 35),
+            Rgba([100, 100, 100, 255]),
+            "dimmed once by the first"
+        );
+        assert_eq!(
+            *image.get_pixel(20, 20),
+            Rgba([100, 100, 100, 255]),
+            "dimmed by the second"
+        );
+        assert_eq!(
+            *image.get_pixel(5, 5),
+            Rgba([50, 50, 50, 255]),
+            "outside both"
+        );
     }
 
     #[test]

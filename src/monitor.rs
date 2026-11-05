@@ -63,8 +63,8 @@ pub fn geometry_centre(geometry: &str) -> Option<(i32, i32)> {
 }
 
 /// Narrowest review window: wide enough for the toolbar's controls
-/// (0.4 used 760 before the text tool, palette and Undo were added).
-pub const MIN_WIDTH: u32 = 840;
+/// (0.4 used 760 before the text and highlight tools, palette and Undo).
+pub const MIN_WIDTH: u32 = 900;
 
 /// Review window geometry for an image on `monitor`: the 0.4 sizing rules
 /// (90 % wide, 84 % high, at least MIN_WIDTH wide, never upscaled), applied to the

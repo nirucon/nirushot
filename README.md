@@ -28,6 +28,8 @@ image. Cancel leaves no file, but the initial capture remains pasteable.
 - `r` then drag: rectangle
 - `a` then drag: arrow
 - `m` then drag: opaque black mask
+- `h` then drag: highlight; everything outside the area is dimmed to 50 %
+  (several highlights share one dimming, and annotations are never dimmed)
 - `t` then click: type one line of text; Enter places it, Escape cancels it.
   S/M/L in the toolbar pick the size; the theme font is used
 - `1`–`6` or the swatches: colour for rectangles, arrows and text — the
@@ -47,8 +49,8 @@ image. Cancel leaves no file, but the initial capture remains pasteable.
 
 ## How editing works
 
-The captured image is never changed. Every crop, rectangle, arrow, mask
-and text is an operation in an ordered list, in the coordinates of the image it
+The captured image is never changed. Every crop, rectangle, arrow, mask,
+highlight and text is an operation in an ordered list, in the coordinates of the image it
 applies to (a crop starts new coordinates for what follows). What the dialog
 shows, and what Save, Copy and Share export, is that list drawn over the
 untouched capture. Undo and redo step through earlier lists, so a wrong crop

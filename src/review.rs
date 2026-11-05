@@ -50,12 +50,13 @@ enum Item {
     Undo,
 }
 
-const TOOLS: [(u8, &str); 5] = [
+const TOOLS: [(u8, &str); 6] = [
     (b'c', "Crop"),
     (b'r', "Rect"),
     (b'a', "Arrow"),
     (b'm', "Mask"),
     (b't', "Text"),
+    (b'h', "Highlight"),
 ];
 
 const SIZE_LABELS: [&str; 3] = ["S", "M", "L"];
@@ -557,6 +558,7 @@ impl Ui<'_> {
                 let colour = match self.tool {
                     b'm' => 0x000000,
                     b'c' => 0xdcc88c,
+                    b'h' => 0xffffff,
                     _ => (c[0] as u32) << 16 | (c[1] as u32) << 8 | c[2] as u32,
                 };
                 let preview = Preview {
@@ -1064,6 +1066,7 @@ impl Ui<'_> {
             0x61 => self.set_tool(b'a'),
             0x6d => self.set_tool(b'm'),
             0x74 if self.font.is_some() => self.set_tool(b't'),
+            0x68 => self.set_tool(b'h'),
             0x31..=0x36 => self.set_colour((key - 0x31) as usize),
             0xffff | 0xff9f => self.edit(Editor::delete_last),
             0x20 => self.space_held = true,
