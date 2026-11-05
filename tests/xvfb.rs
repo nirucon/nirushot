@@ -349,3 +349,42 @@ fn h1_open_review_does_not_block_a_locker_grab() {
     );
     drop(review);
 }
+
+/// Open a 1600x900 review on a 1920x1080 server, run `steps`, save with `s`
+/// and return the export together with the original.
+fn session(steps: impl FnOnce(&Review)) -> (RgbaImage, RgbaImage) {
+    let x = start_xvfb(1920, 1080);
+    let fixture = Fixture::new(1600, 900);
+    let out = fixture.path("out.png");
+    let mut review = open_review(&binary(), &x, &fixture, &out);
+    steps(&review);
+    review.settle();
+    review.key("s");
+    review.wait_exit();
+    (
+        image::open(&out).unwrap().to_rgba8(),
+        fixture_image(1600, 900),
+    )
+}
+
+#[test]
+#[ignore = "needs Xvfb and xdotool"]
+fn h3_undo_and_redo_from_the_keyboard() {
+    let (undone, original) = session(|r| {
+        r.key("r");
+        r.drag((300, 300), (700, 600), 10, 1);
+        r.key("c");
+        r.drag((200, 200), (900, 700), 10, 1);
+        r.key("ctrl+z");
+        r.key("ctrl+z");
+    });
+    assert!(undone == original, "two undos restore the capture");
+    let (redone, original) = session(|r| {
+        r.key("r");
+        r.drag((300, 300), (700, 600), 10, 1);
+        r.key("ctrl+z");
+        r.key("ctrl+shift+z");
+    });
+    assert_eq!(redone.dimensions(), original.dimensions());
+    assert!(redone != original, "redo brings the rectangle back");
+}
