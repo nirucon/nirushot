@@ -14,6 +14,7 @@ use ab_glyph::FontArc;
 use image::{Rgba, RgbaImage};
 use x11rb::{
     connection::Connection,
+    properties::{WmSizeHints, WmSizeHintsSpecification},
     protocol::{xproto::*, Event},
     rust_connection::RustConnection,
     wrapper::ConnectionExt as _,
@@ -22,7 +23,7 @@ use x11rb::{
 use crate::{
     atomic_save, copy_to_clipboard, default_path, draw_text,
     edit::{fill_rect, op_from_drag, Change, Editor, MEDIUM, RED},
-    load_font, load_theme, notify, rgb, text_width,
+    load_font, load_theme, monitor, notify, rgb, text_width,
     view::{
         draw_preview, intersect, next_event, preview_bounds, put_bytes, to_x_bytes, view_layout,
         view_rect, Area, Layout, Preview, RefineTimer, ViewCache, ViewKey, TOOLBAR,
@@ -34,6 +35,8 @@ pub struct Output<'a> {
     pub temp: &'a Path,
     pub save: Option<&'a Path>,
     pub notify: bool,
+    /// A root point inside the capture, used to choose the monitor.
+    pub hint: Option<(i32, i32)>,
 }
 
 /// Something clickable in the toolbar.
@@ -253,17 +256,16 @@ pub fn review(image: RgbaImage, out: Output<'_>) -> Result<(), String> {
     let lsb_first = c.setup().image_byte_order == ImageOrder::LSB_FIRST;
     let sw = c.setup().roots[screen].width_in_pixels as u32;
     let sh = c.setup().roots[screen].height_in_pixels as u32;
-    let max_w = (sw as f32 * 0.90).max(320.0);
-    let max_h = (sh as f32 * 0.84 - TOOLBAR as f32).max(200.0);
-    let initial = (max_w / image.width() as f32)
-        .min(max_h / image.height() as f32)
-        .min(1.0);
-    let win_w = ((image.width() as f32 * initial) as u32)
-        .max(760)
-        .min(sw.saturating_sub(24));
-    let win_h = TOOLBAR + (image.height() as f32 * initial).max(1.0) as u32;
-    let x = ((sw as i32 - win_w as i32) / 2).max(0) as i16;
-    let y = ((sh as i32 - win_h as i32) / 2).max(0) as i16;
+    // Open on the monitor holding the captured region (or the pointer), not
+    // centred on the root, which straddles the seam between monitors.
+    let monitors = monitor::monitors(&c, root, (sw, sh));
+    let point = out
+        .hint
+        .or_else(|| monitor::pointer(&c, root))
+        .unwrap_or((sw as i32 / 2, sh as i32 / 2));
+    let screen_area = monitor::choose(&monitors, point).unwrap_or((0, 0, sw as i32, sh as i32));
+    let (x, y, win_w, win_h) = monitor::placement(screen_area, image.dimensions());
+    let (x, y, win_w, win_h) = (x as i16, y as i16, win_w as u32, win_h as u32);
     let win = c.generate_id().map_err(|e| e.to_string())?;
     let gc = c.generate_id().map_err(|e| e.to_string())?;
     let preview_gc = c.generate_id().map_err(|e| e.to_string())?;
@@ -317,6 +319,21 @@ pub fn review(image: RgbaImage, out: Output<'_>) -> Result<(), String> {
     ) {
         let _ = c.change_property32(PropMode::REPLACE, win, kind, AtomEnum::ATOM, &[dialog]);
     }
+    // Ask the window manager to keep the chosen monitor and position.
+    let hints = WmSizeHints {
+        position: Some((
+            WmSizeHintsSpecification::ProgramSpecified,
+            x as i32,
+            y as i32,
+        )),
+        size: Some((
+            WmSizeHintsSpecification::ProgramSpecified,
+            win_w as i32,
+            win_h as i32,
+        )),
+        ..WmSizeHints::default()
+    };
+    let _ = hints.set_normal_hints(&*c, win);
     let wm_protocols = intern_atom(&c, "WM_PROTOCOLS").unwrap_or(0);
     let wm_delete = intern_atom(&c, "WM_DELETE_WINDOW").unwrap_or(0);
     let refine_atom = intern_atom(&c, "_NIRUSHOT_REFINE").unwrap_or(0);

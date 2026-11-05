@@ -1,4 +1,5 @@
 mod edit;
+mod monitor;
 mod review;
 mod view;
 
@@ -441,6 +442,7 @@ fn main() {
         .unwrap_or_else(|e| fail(&format!("cannot create private temporary directory: {e}")));
     let temp = tempdir.path().join("capture.png");
     let mut maim = vec!["--quiet".to_string()];
+    let mut hint = None;
     match mode {
         "region" => {
             let geometry = match run(
@@ -461,6 +463,7 @@ fn main() {
                 }
                 Err(e) => fail(&format!("selection failed: {e}")),
             };
+            hint = monitor::geometry_centre(&geometry);
             maim.extend(["-g".into(), geometry]);
         }
         "window" => {
@@ -488,6 +491,7 @@ fn main() {
             temp: &temp,
             save: save.as_deref(),
             notify: notify_enabled,
+            hint,
         };
         if let Err(e) = review::review(image, output) {
             fail(&e);

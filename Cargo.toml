@@ -13,7 +13,7 @@ tempfile = "3"
 # 0.25.8 keeps the same PNG API while the locked build still compiles with
 # Rust 1.85; later 0.25 releases require 1.88.
 image = { version = "0.25.8", default-features = false, features = ["png"] }
-x11rb = "0.13"
+x11rb = { version = "0.13", features = ["randr"] }
 
 [profile.release]
 lto = true
