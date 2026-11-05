@@ -62,8 +62,12 @@ pub fn geometry_centre(geometry: &str) -> Option<(i32, i32)> {
     Some((x + w / 2, y + h / 2))
 }
 
+/// Narrowest review window: wide enough for the toolbar's controls
+/// (0.4 used 760 before the text tool, palette and Undo were added).
+pub const MIN_WIDTH: u32 = 840;
+
 /// Review window geometry for an image on `monitor`: the 0.4 sizing rules
-/// (90 % wide, 84 % high, at least 760 wide, never upscaled), applied to the
+/// (90 % wide, 84 % high, at least MIN_WIDTH wide, never upscaled), applied to the
 /// monitor instead of the whole root, and centred on it.
 pub fn placement(monitor: Area, img: (u32, u32)) -> Area {
     let (mx, my, mw, mh) = monitor;
@@ -72,7 +76,7 @@ pub fn placement(monitor: Area, img: (u32, u32)) -> Area {
     let max_h = (mh as f32 * 0.84 - TOOLBAR as f32).max(200.0);
     let initial = (max_w / img.0 as f32).min(max_h / img.1 as f32).min(1.0);
     let w = ((img.0 as f32 * initial) as u32)
-        .max(760)
+        .max(MIN_WIDTH)
         .min(mw.saturating_sub(24).max(320));
     let h = TOOLBAR + (img.1 as f32 * initial).max(1.0) as u32;
     let x = mx + ((mw as i32 - w as i32) / 2).max(0);

@@ -22,7 +22,7 @@ use x11rb::{
 
 use crate::{
     atomic_save, copy_to_clipboard, default_path, draw_text,
-    edit::{fill_rect, op_from_drag, text_area, Change, Editor, Op, MEDIUM, RED, TEXT_SIZES},
+    edit::{fill_rect, op_from_drag, text_area, Change, Editor, Op, PALETTE, STROKES, TEXT_SIZES},
     keys::{self, keysym_char, Keymap},
     load_font, load_theme, monitor, notify, rgb, text_width,
     view::{
@@ -44,7 +44,9 @@ pub struct Output<'a> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Item {
     Tool(u8),
+    /// Stroke width, or text size while the text tool is active.
     Size(usize),
+    Colour(usize),
     Undo,
 }
 
@@ -58,6 +60,7 @@ const TOOLS: [(u8, &str); 5] = [
 
 const SIZE_LABELS: [&str; 3] = ["S", "M", "L"];
 const CELL: f32 = 22.0;
+const SWATCH: f32 = 18.0;
 
 /// Toolbar items with their x position and width.
 fn toolbar_items(font: &FontArc) -> Vec<(f32, f32, Item)> {
@@ -73,7 +76,12 @@ fn toolbar_items(font: &FontArc) -> Vec<(f32, f32, Item)> {
         items.push((pos, CELL, Item::Size(i)));
         pos += CELL + 2.0;
     }
-    pos += 14.0;
+    pos += 12.0;
+    for i in 0..=PALETTE.len() {
+        items.push((pos, SWATCH, Item::Colour(i)));
+        pos += SWATCH + 2.0;
+    }
+    pos += 12.0;
     let width = 28.0 + text_width(font, 12.0, "Undo");
     items.push((pos, width, Item::Undo));
     items
@@ -90,7 +98,10 @@ struct ToolbarState {
     tool: u8,
     zoom: f32,
     can_undo: bool,
-    text_size: usize,
+    /// The picker's selection: text size for the text tool, else stroke.
+    size: usize,
+    colour: usize,
+    colours: [Rgba<u8>; 6],
 }
 
 fn outline(canvas: &mut RgbaImage, x: i32, w: i32, colour: Rgba<u8>) {
@@ -139,18 +150,31 @@ fn draw_toolbar(canvas: &mut RgbaImage, theme: &Theme, font: Option<&FontArc>, s
                 draw_text(canvas, font, 12.0, pos + 9.0, 20.0, label, rgb(colour));
             }
             Item::Size(i) => {
-                let label = SIZE_LABELS[i];
-                let active = s.text_size == i;
+                let active = s.size == i;
                 if active {
                     fill_rect(canvas, x, 13, w, 26, rgb(theme.foreground));
                 }
-                let colour = if active {
+                let colour = rgb(if active {
                     theme.background
                 } else {
                     theme.muted
-                };
-                let lx = pos + (CELL - text_width(font, 12.0, label)) / 2.0;
-                draw_text(canvas, font, 12.0, lx, 20.0, label, rgb(colour));
+                });
+                if s.tool == b't' {
+                    let label = SIZE_LABELS[i];
+                    let lx = pos + (CELL - text_width(font, 12.0, label)) / 2.0;
+                    draw_text(canvas, font, 12.0, lx, 20.0, label, colour);
+                } else {
+                    // A bar as thick as the stroke it stands for.
+                    let t = [1, 2, 4][i];
+                    fill_rect(canvas, x + 5, 26 - t / 2, w - 10, t, colour);
+                }
+            }
+            Item::Colour(i) => {
+                if s.colour == i {
+                    outline(canvas, x - 1, w + 2, rgb(theme.foreground));
+                }
+                fill_rect(canvas, x + 3, 19, w - 6, 14, rgb(theme.border));
+                fill_rect(canvas, x + 4, 20, w - 8, 12, s.colours[i]);
             }
             Item::Undo => {
                 outline(canvas, x, w, rgb(theme.border));
@@ -179,7 +203,7 @@ fn draw_toolbar(canvas: &mut RgbaImage, theme: &Theme, font: Option<&FontArc>, s
         rgb(theme.muted),
     );
     let line1 = "s save   y copy   u share   esc close";
-    let line2 = "^Z undo   ^Y redo   +/- zoom   0 fit   v view";
+    let line2 = "^Z undo   1-6 colour   w width   +/- zoom   0 fit   v view";
     let hint_width = text_width(font, 11.0, line1).max(text_width(font, 11.0, line2));
     let hint_x = win_w as f32 - hint_width - 16.0;
     // Hints are a convenience; they give way to the controls on a narrow window.
@@ -263,6 +287,8 @@ struct Ui<'a> {
     drag: Option<((i32, i32), (i32, i32))>,
     typing: Option<Typing>,
     text_size: usize,
+    stroke: usize,
+    colour: usize,
     pan_drag: Option<(i32, i32, f32, f32)>,
     cache: ViewCache,
     fine: bool,
@@ -406,6 +432,9 @@ pub fn review(image: RgbaImage, out: Output<'_>) -> Result<(), String> {
         drag: None,
         typing: None,
         text_size: 1,
+        stroke: 1,
+        // Red, as 0.4 always drew.
+        colour: 1,
         pan_drag: None,
         cache: ViewCache::default(),
         fine: false,
@@ -445,7 +474,9 @@ impl Ui<'_> {
                 tool: self.tool,
                 zoom: self.zoom,
                 can_undo: self.editor.can_undo(),
-                text_size: self.text_size,
+                size: self.picker(),
+                colour: self.colour,
+                colours: self.colours(),
             };
             draw_toolbar(
                 &mut self.frame.toolbar,
@@ -516,17 +547,18 @@ impl Ui<'_> {
                 }
             }
             if let Some((from, to)) = self.drag {
+                let c = self.current_colour();
                 let colour = match self.tool {
                     b'm' => 0x000000,
                     b'c' => 0xdcc88c,
-                    _ => 0xdc4646,
+                    _ => (c[0] as u32) << 16 | (c[1] as u32) << 8 | c[2] as u32,
                 };
                 let preview = Preview {
                     mode: self.tool,
                     from,
                     to,
                     colour,
-                    stroke: MEDIUM,
+                    stroke: STROKES[self.stroke],
                 };
                 draw_preview(&self.c, self.win, self.preview_gc, &preview)?;
                 self.drawn.push(preview_bounds(&preview));
@@ -558,7 +590,7 @@ impl Ui<'_> {
             return Ok(());
         };
         let mut canvas = self.area_pixels(area);
-        let colour = RED;
+        let colour = self.current_colour();
         let (ox, oy) = ((wx - area.0) as f32, (wy - area.1) as f32);
         draw_text(&mut canvas, font, size, ox, oy, &typing.text, colour);
         fill_rect(
@@ -598,7 +630,7 @@ impl Ui<'_> {
             x: typing.at.0,
             y: typing.at.1,
             text: typing.text,
-            colour: RED,
+            colour: self.current_colour(),
             size: TEXT_SIZES[self.text_size],
         };
         self.edit(|editor| Some(editor.push(op)));
@@ -718,6 +750,42 @@ impl Ui<'_> {
         self.pan = (0.0, 0.0);
         self.fine = false;
         self.need_frame = true;
+    }
+
+    /// The palette: the theme's focus colour, then the fixed colours.
+    fn colours(&self) -> [Rgba<u8>; 6] {
+        let mut colours = [rgb(self.theme.accent); 6];
+        colours[1..].copy_from_slice(&PALETTE);
+        colours
+    }
+
+    fn current_colour(&self) -> Rgba<u8> {
+        self.colours()[self.colour]
+    }
+
+    fn set_colour(&mut self, colour: usize) {
+        self.colour = colour;
+        self.need_toolbar = true;
+        self.need_preview = true;
+    }
+
+    /// The picker shows text sizes for the text tool and strokes otherwise.
+    fn picker(&self) -> usize {
+        if self.tool == b't' {
+            self.text_size
+        } else {
+            self.stroke
+        }
+    }
+
+    fn set_picker(&mut self, value: usize) {
+        if self.tool == b't' {
+            self.text_size = value;
+        } else {
+            self.stroke = value;
+        }
+        self.need_toolbar = true;
+        self.need_preview = true;
     }
 
     fn set_tool(&mut self, tool: u8) {
@@ -865,11 +933,8 @@ impl Ui<'_> {
             let hit = self.font.as_ref().and_then(|f| toolbar_hit(f, at.0));
             match hit {
                 Some(Item::Tool(tool)) => self.set_tool(tool),
-                Some(Item::Size(size)) => {
-                    self.text_size = size;
-                    self.need_toolbar = true;
-                    self.need_preview = true;
-                }
+                Some(Item::Size(size)) => self.set_picker(size),
+                Some(Item::Colour(colour)) => self.set_colour(colour),
                 Some(Item::Undo) => {
                     self.commit_text();
                     self.undo();
@@ -914,7 +979,8 @@ impl Ui<'_> {
         let dims = self.editor.image().dimensions();
         let start = self.layout.image_point(dims, from.0, from.1);
         let end = self.layout.image_point(dims, to.0, to.1);
-        if let Some(op) = op_from_drag(self.tool, start, end, dims, RED, MEDIUM) {
+        let (colour, stroke) = (self.current_colour(), STROKES[self.stroke]);
+        if let Some(op) = op_from_drag(self.tool, start, end, dims, colour, stroke) {
             self.edit(|editor| Some(editor.push(op)));
         }
     }
@@ -966,6 +1032,8 @@ impl Ui<'_> {
             0x61 => self.set_tool(b'a'),
             0x6d => self.set_tool(b'm'),
             0x74 if self.font.is_some() => self.set_tool(b't'),
+            0x31..=0x36 => self.set_colour((key - 0x31) as usize),
+            0x77 => self.set_picker((self.picker() + 1) % STROKES.len()),
             0x76 => self.set_tool(b'0'),
             0x2b | 0x3d | 0xffab => self.set_zoom((self.zoom * 1.25).min(8.0)),
             0x2d | 0xffad => self.set_zoom((self.zoom / 1.25).max(0.1)),

@@ -25,11 +25,15 @@ image. Cancel leaves no file, but the initial capture remains pasteable.
 ## Review controls
 
 - `c` then drag: crop
-- `r` then drag: red rectangle
-- `a` then drag: red arrow
+- `r` then drag: rectangle
+- `a` then drag: arrow
 - `m` then drag: opaque black mask
 - `t` then click: type one line of text; Enter places it, Escape cancels it.
   S/M/L in the toolbar pick the size; the theme font is used
+- `1`–`6` or the swatches: colour for rectangles, arrows and text — the
+  theme's focus colour, red (the default), yellow, green, white, black
+- `w` or the picker: thin/medium/thick stroke (S/M/L text size with the text
+  tool); medium is the stroke 0.4 always used
 - `v`: view/pan mode; drag the image or middle-drag to pan
 - Mouse wheel or `+`/`-`: zoom; `0`: fit
 - Ctrl+Z or the Undo button: undo; Ctrl+Shift+Z or Ctrl+Y: redo

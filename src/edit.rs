@@ -19,6 +19,18 @@ pub const RED: Rgba<u8> = Rgba([220, 70, 70, 255]);
 pub const BLACK: Rgba<u8> = Rgba([0, 0, 0, 255]);
 /// The stroke 0.4 always used; the medium stroke.
 pub const MEDIUM: u32 = 3;
+/// Thin, medium and thick strokes, in image pixels.
+pub const STROKES: [u32; 3] = [2, MEDIUM, 6];
+
+/// The palette after the theme's focus colour: red (0.4's colour), yellow,
+/// green, white and black.
+pub const PALETTE: [Rgba<u8>; 5] = [
+    RED,
+    Rgba([240, 196, 40, 255]),
+    Rgba([70, 180, 90, 255]),
+    Rgba([255, 255, 255, 255]),
+    BLACK,
+];
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Op {
@@ -832,6 +844,34 @@ mod tests {
             steps += 1;
         }
         assert_eq!(steps, UNDO_LIMIT);
+    }
+
+    #[test]
+    fn colour_and_stroke_apply_to_rectangles_and_arrows_but_not_masks() {
+        for colour in PALETTE {
+            for stroke in STROKES {
+                let blank = RgbaImage::from_pixel(80, 60, Rgba([128, 128, 128, 255]));
+                let rect =
+                    op_from_drag(b'r', (10, 10), (70, 50), (80, 60), colour, stroke).unwrap();
+                let image = render(&blank, &[rect], None);
+                // The border is exactly `stroke` pixels wide, in the colour.
+                for x in 10..10 + stroke {
+                    assert_eq!(*image.get_pixel(x, 30), colour);
+                }
+                assert_eq!(
+                    *image.get_pixel(10 + stroke, 30),
+                    Rgba([128, 128, 128, 255])
+                );
+                let arrow =
+                    op_from_drag(b'a', (5, 30), (75, 30), (80, 60), colour, stroke).unwrap();
+                let image = render(&blank, &[arrow], None);
+                assert_eq!(*image.get_pixel(40, 30), colour);
+                let mask =
+                    op_from_drag(b'm', (10, 10), (70, 50), (80, 60), colour, stroke).unwrap();
+                let image = render(&blank, &[mask], None);
+                assert_eq!(*image.get_pixel(40, 30), BLACK, "the mask is always black");
+            }
+        }
     }
 
     #[test]
