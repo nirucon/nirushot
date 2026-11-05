@@ -30,18 +30,45 @@ image. Cancel leaves no file, but the initial capture remains pasteable.
 - `m` then drag: opaque black mask
 - `v`: view/pan mode; drag the image or middle-drag to pan
 - Mouse wheel or `+`/`-`: zoom; `0`: fit
+- Ctrl+Z or the Undo button: undo; Ctrl+Shift+Z or Ctrl+Y: redo
 - `s` or Enter: save to `~/Pictures/Screenshot-YYYY-MM-DD_HH-MM-SS.png` and copy
 - `y`: copy without saving
+- `u`: share with NIRU Share
 - The initial capture is already in the clipboard before review opens
-- Escape or the close button: discard
+- Escape or the close button: discard (Escape first cancels a drag in progress)
+
+## How editing works
+
+The captured image is never changed. Every crop, rectangle, arrow and mask
+is an operation in an ordered list, in the coordinates of the image it
+applies to (a crop starts new coordinates for what follows). What the dialog
+shows, and what Save, Copy and Share export, is that list drawn over the
+untouched capture. Undo and redo step through earlier lists, so a wrong crop
+is one Ctrl+Z away and nothing has to be discarded. The history keeps the
+last 100 steps; it stores operations, not image copies.
+
+The mask is always opaque black, never a blur or pixelation, because those
+can leak what is underneath.
+
+## Window
 
 The initial region selector uses a thick, opaque amber border so it remains
 visible on light and dark wallpapers. The review window is a centred floating
-X11 dialog, so NIRUWM does not tile it.
+X11 dialog, so NIRUWM does not tile it. It opens on the monitor that holds the
+captured region (or the pointer), sized for that monitor, instead of across
+the seam of a multi-monitor desktop.
+
+The dialog takes keyboard focus but holds **no keyboard or pointer grab**, so
+the screen lock (NIRULOCK, or any X locker) can always take over while a review
+is open; the review stays open underneath and its edits are kept. Only `slop`'s
+short-lived region selection grabs input.
+
+Large captures stay smooth: the scaled view is cached, a drag preview is drawn
+over it without re-scaling, a finished annotation re-scales only the pixels it
+changed, and a new zoom is scaled quickly first and refined after a moment.
 The toolbar and typography follow the active NIRUX theme and configured
-monospace font. Pointer and keyboard grabs exist only while the dialog is open.
-The original capture is never overwritten; crop, rectangle, arrow and mask are
-applied only in the exported result.
+monospace font. Keys follow the active layout, including Shift, AltGr, Caps
+Lock and Num Lock.
 
 Saved files use a NIRU notification with Open, Copy and Show in folder when the
 installed `notify-send` supports actions; otherwise a plain notification is
