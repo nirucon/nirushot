@@ -202,8 +202,8 @@ fn draw_toolbar(canvas: &mut RgbaImage, theme: &Theme, font: Option<&FontArc>, s
         &zoom_label,
         rgb(theme.muted),
     );
-    let line1 = "s save   y copy   u share   esc close";
-    let line2 = "^Z undo   1-6 colour   w width   +/- zoom   0 fit   v view";
+    let line1 = "s/^S save   y/^C copy   u share   del remove   esc close";
+    let line2 = "^Z undo   1-6 colour   w width   space-drag pan   +/- 0 zoom";
     let hint_width = text_width(font, 11.0, line1).max(text_width(font, 11.0, line2));
     let hint_x = win_w as f32 - hint_width - 16.0;
     // Hints are a convenience; they give way to the controls on a narrow window.
@@ -298,6 +298,10 @@ struct Ui<'a> {
     /// Image areas changed by the last edit, re-scaled on their own.
     changed: Vec<Area>,
     need_preview: bool,
+    /// An event read ahead while coalescing motion or detecting key repeat.
+    pending: Option<Event>,
+    /// Space is held: a left drag pans, whatever the tool.
+    space_held: bool,
     /// Window areas the drag preview and the text being typed cover.
     drawn: Vec<Area>,
 }
@@ -342,6 +346,7 @@ pub fn review(image: RgbaImage, out: Output<'_>) -> Result<(), String> {
                     | EventMask::BUTTON_RELEASE
                     | EventMask::POINTER_MOTION
                     | EventMask::KEY_PRESS
+                    | EventMask::KEY_RELEASE
                     | EventMask::STRUCTURE_NOTIFY
                     | EventMask::FOCUS_CHANGE,
             ),
@@ -444,17 +449,18 @@ pub fn review(image: RgbaImage, out: Output<'_>) -> Result<(), String> {
         changed: Vec::new(),
         need_preview: false,
         drawn: Vec::new(),
+        pending: None,
+        space_held: false,
     };
     ui.run()
 }
 
 impl Ui<'_> {
     fn run(&mut self) -> Result<(), String> {
-        let mut pending = None;
         loop {
             self.redraw()?;
             self.c.flush().map_err(|e| e.to_string())?;
-            let event = next_event(&self.c, &mut pending)?;
+            let event = next_event(&self.c, &mut self.pending)?;
             if let Flow::Close = self.handle(event)? {
                 let _ = std::fs::remove_file(self.out.temp);
                 let _ = self.c.destroy_window(self.win);
@@ -909,6 +915,7 @@ impl Ui<'_> {
             }
             Event::ButtonRelease(e) if e.event == win => self.button_release(&e),
             Event::KeyPress(e) if e.event == win => return self.key_press(&e),
+            Event::KeyRelease(e) if e.event == win => self.key_release(&e)?,
             Event::MappingNotify(_) => self.keymap = Keymap::load(&self.c),
             Event::Error(e) => eprintln!("nirushot: X11 error: {e:?}"),
             _ => {}
@@ -941,6 +948,10 @@ impl Ui<'_> {
                 }
                 None => {}
             }
+            return;
+        }
+        if self.space_held {
+            self.pan_drag = Some((at.0, at.1, self.pan.0, self.pan.1));
             return;
         }
         if self.tool == b't' {
@@ -985,6 +996,25 @@ impl Ui<'_> {
         }
     }
 
+    fn key_release(&mut self, e: &KeyReleaseEvent) -> Result<(), String> {
+        if keys::shortcut(self.keymap.symbol(e.detail, e.state)) != 0x20 {
+            return Ok(());
+        }
+        // Auto-repeat sends a release immediately followed by a press with
+        // the same time; that is still a held key.
+        if self.pending.is_none() {
+            self.pending = self.c.poll_for_event().map_err(Self::err)?;
+        }
+        if let Some(Event::KeyPress(next)) = &self.pending {
+            if next.detail == e.detail && next.time == e.time {
+                self.pending = None;
+                return Ok(());
+            }
+        }
+        self.space_held = false;
+        Ok(())
+    }
+
     fn key_press(&mut self, e: &KeyPressEvent) -> Result<Flow, String> {
         let sym = self.keymap.symbol(e.detail, e.state);
         let key = keys::shortcut(sym);
@@ -1015,6 +1045,8 @@ impl Ui<'_> {
                 0x7a if shift => self.redo(),
                 0x7a => self.undo(),
                 0x79 => self.redo(),
+                0x63 => return self.copy(),
+                0x73 => return self.save(),
                 _ => {}
             }
             return Ok(Flow::Continue);
@@ -1033,6 +1065,8 @@ impl Ui<'_> {
             0x6d => self.set_tool(b'm'),
             0x74 if self.font.is_some() => self.set_tool(b't'),
             0x31..=0x36 => self.set_colour((key - 0x31) as usize),
+            0xffff | 0xff9f => self.edit(Editor::delete_last),
+            0x20 => self.space_held = true,
             0x77 => self.set_picker((self.picker() + 1) % STROKES.len()),
             0x76 => self.set_tool(b'0'),
             0x2b | 0x3d | 0xffab => self.set_zoom((self.zoom * 1.25).min(8.0)),

@@ -114,7 +114,6 @@ impl Fixture {
         self.dir.path().join(name)
     }
 
-    #[allow(dead_code)]
     fn clipboard_count(&self) -> usize {
         fs::read_to_string(self.path("xclip.log"))
             .map(|s| s.lines().count())
@@ -353,13 +352,17 @@ fn h1_open_review_does_not_block_a_locker_grab() {
 /// Open a 1600x900 review on a 1920x1080 server, run `steps`, save with `s`
 /// and return the export together with the original.
 fn session(steps: impl FnOnce(&Review)) -> (RgbaImage, RgbaImage) {
+    session_with(|r, _| steps(r), "s")
+}
+
+fn session_with(steps: impl FnOnce(&Review, &Fixture), save_key: &str) -> (RgbaImage, RgbaImage) {
     let x = start_xvfb(1920, 1080);
     let fixture = Fixture::new(1600, 900);
     let out = fixture.path("out.png");
     let mut review = open_review(&binary(), &x, &fixture, &out);
-    steps(&review);
+    steps(&review, &fixture);
     review.settle();
-    review.key("s");
+    review.key(save_key);
     review.wait_exit();
     (
         image::open(&out).unwrap().to_rgba8(),
@@ -435,4 +438,49 @@ fn e1_text_is_typed_placed_and_cancelled() {
         cancelled == original,
         "Esc cancels the text, not the review"
     );
+}
+
+#[test]
+#[ignore = "needs Xvfb and xdotool"]
+fn e3_standard_shortcuts() {
+    // Ctrl+C copies the edited image (after the initial capture copy), and
+    // Ctrl+S saves and closes like `s`.
+    let (saved, original) = session_with(
+        |r, fixture| {
+            assert_eq!(fixture.clipboard_count(), 1, "the capture is copied first");
+            r.key("r");
+            r.drag((300, 300), (700, 600), 10, 1);
+            r.key("ctrl+c");
+            r.settle();
+            assert_eq!(fixture.clipboard_count(), 2, "Ctrl+C copied the edit");
+        },
+        "ctrl+s",
+    );
+    assert!(saved != original, "Ctrl+S saved the edited image");
+
+    // Delete removes the last annotation only.
+    let (rect_only, _) = session(|r| {
+        r.key("r");
+        r.drag((300, 300), (700, 600), 10, 1);
+    });
+    let (deleted, _) = session(|r| {
+        r.key("r");
+        r.drag((300, 300), (700, 600), 10, 1);
+        r.key("a");
+        r.drag((900, 300), (1200, 600), 10, 1);
+        r.key("Delete");
+    });
+    assert!(
+        deleted == rect_only,
+        "Delete removed the arrow and kept the rectangle"
+    );
+
+    // Space-drag pans instead of drawing with the active tool.
+    let (panned, original) = session(|r| {
+        r.key("r");
+        r.xdotool(&["keydown".into(), "space".into()]);
+        r.drag((300, 300), (700, 600), 10, 1);
+        r.xdotool(&["keyup".into(), "space".into()]);
+    });
+    assert!(panned == original, "a space-drag drew nothing");
 }

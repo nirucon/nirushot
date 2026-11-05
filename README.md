@@ -34,11 +34,13 @@ image. Cancel leaves no file, but the initial capture remains pasteable.
   theme's focus colour, red (the default), yellow, green, white, black
 - `w` or the picker: thin/medium/thick stroke (S/M/L text size with the text
   tool); medium is the stroke 0.4 always used
-- `v`: view/pan mode; drag the image or middle-drag to pan
+- `v`: view/pan mode; drag the image, middle-drag, or hold Space and drag
+  with any tool to pan
 - Mouse wheel or `+`/`-`: zoom; `0`: fit
 - Ctrl+Z or the Undo button: undo; Ctrl+Shift+Z or Ctrl+Y: redo
-- `s` or Enter: save to `~/Pictures/Screenshot-YYYY-MM-DD_HH-MM-SS.png` and copy
-- `y`: copy without saving
+- `s`, Ctrl+S or Enter: save to `~/Pictures/Screenshot-YYYY-MM-DD_HH-MM-SS.png` and copy
+- `y` or Ctrl+C: copy without saving
+- Delete: remove the last annotation (undoable)
 - `u`: share with NIRU Share
 - The initial capture is already in the clipboard before review opens
 - Escape or the close button: discard (Escape first cancels a drag in progress)

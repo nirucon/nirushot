@@ -369,6 +369,24 @@ impl Editor {
         }
     }
 
+    /// Remove the most recent annotation (not a crop), as an undoable step.
+    pub fn delete_last(&mut self) -> Option<Change> {
+        let index = self.ops.iter().rposition(|op| !op.is_crop())?;
+        let mut ops = self.ops.clone();
+        let removed = ops.remove(index);
+        self.remember();
+        self.ops = ops;
+        self.redo.clear();
+        self.generation += 1;
+        self.image = render(&self.original, &self.ops, self.font.as_ref());
+        // Behind a crop it lives in other coordinates: redraw everything.
+        if self.ops[index..].iter().any(Op::is_crop) {
+            Some(Change::Full)
+        } else {
+            Some(Change::Areas(removed.areas(self.font.as_ref())))
+        }
+    }
+
     fn remember(&mut self) {
         self.undo.push(self.ops.clone());
         if self.undo.len() > UNDO_LIMIT {
@@ -826,6 +844,34 @@ mod tests {
         let crop = op_from_drag(b'c', (10, 10), (50, 40), (100, 100), RED, MEDIUM).unwrap();
         assert_eq!(editor.push(crop), Change::Full);
         assert_eq!(editor.undo(), Some(Change::Full));
+    }
+
+    #[test]
+    fn delete_removes_the_last_annotation_and_can_be_undone() {
+        let (_, mut editor) = run(SESSION);
+        let ops = editor.ops().to_vec();
+        let image = editor.image().clone();
+        // The session ends with a rectangle after the second crop.
+        assert!(matches!(editor.delete_last(), Some(Change::Areas(_))));
+        assert_eq!(editor.ops(), &ops[..ops.len() - 1]);
+        // Next is the mask before that crop: everything is redrawn.
+        assert_eq!(editor.delete_last(), Some(Change::Full));
+        assert!(!editor
+            .ops()
+            .iter()
+            .any(|op| matches!(op, Op::Mask { x: 100, .. })));
+        assert_eq!(editor.image().dimensions(), image.dimensions());
+        editor.undo().unwrap();
+        editor.undo().unwrap();
+        assert!(*editor.image() == image);
+        let mut crops_only = Editor::new_test(pattern(50, 50));
+        crops_only.push(Op::Crop {
+            x: 1,
+            y: 1,
+            w: 40,
+            h: 40,
+        });
+        assert_eq!(crops_only.delete_last(), None, "crops are not annotations");
     }
 
     #[test]
