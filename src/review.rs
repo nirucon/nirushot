@@ -23,6 +23,7 @@ use x11rb::{
 use crate::{
     atomic_save, copy_to_clipboard, default_path, draw_text,
     edit::{fill_rect, op_from_drag, Change, Editor, MEDIUM, RED},
+    keys::{self, Keymap},
     load_font, load_theme, monitor, notify, rgb, text_width,
     view::{
         draw_preview, intersect, next_event, preview_bounds, put_bytes, to_x_bytes, view_layout,
@@ -200,14 +201,6 @@ fn intern_atom(c: &RustConnection, name: &str) -> Option<Atom> {
         .map(|r| r.atom)
 }
 
-fn key_name(c: &RustConnection, code: u8) -> u32 {
-    c.get_keyboard_mapping(code, 1)
-        .ok()
-        .and_then(|r| r.reply().ok())
-        .and_then(|m| m.keysyms.first().copied())
-        .unwrap_or(0)
-}
-
 enum Flow {
     Continue,
     Close,
@@ -229,6 +222,7 @@ struct Ui<'a> {
     font: Option<FontArc>,
     out: Output<'a>,
     editor: Editor,
+    keymap: Keymap,
     tool: u8,
     zoom: f32,
     pan: (f32, f32),
@@ -351,6 +345,7 @@ pub fn review(image: RgbaImage, out: Output<'_>) -> Result<(), String> {
     c.flush().map_err(|e| e.to_string())?;
     let refine = RefineTimer::new(Arc::clone(&c), win, refine_atom);
     let layout = view_layout(image.dimensions(), (win_w, win_h), 1.0, (0.0, 0.0));
+    let keymap = Keymap::load(&c);
     let mut ui = Ui {
         c,
         win,
@@ -366,6 +361,7 @@ pub fn review(image: RgbaImage, out: Output<'_>) -> Result<(), String> {
         theme: load_theme(),
         font: load_font(),
         out,
+        keymap,
         editor: Editor::new(image),
         tool: b'0',
         zoom: 1.0,
@@ -746,6 +742,7 @@ impl Ui<'_> {
             }
             Event::ButtonRelease(e) if e.event == win => self.button_release(&e),
             Event::KeyPress(e) if e.event == win => return self.key_press(&e),
+            Event::MappingNotify(_) => self.keymap = Keymap::load(&self.c),
             Event::Error(e) => eprintln!("nirushot: X11 error: {e:?}"),
             _ => {}
         }
@@ -802,9 +799,10 @@ impl Ui<'_> {
     }
 
     fn key_press(&mut self, e: &KeyPressEvent) -> Result<Flow, String> {
-        let key = key_name(&self.c, e.detail);
-        let ctrl = u16::from(e.state) & u16::from(KeyButMask::CONTROL) != 0;
-        let shift = u16::from(e.state) & u16::from(KeyButMask::SHIFT) != 0;
+        let sym = self.keymap.symbol(e.detail, e.state);
+        let key = keys::shortcut(sym);
+        let ctrl = e.state.contains(KeyButMask::CONTROL);
+        let shift = e.state.contains(KeyButMask::SHIFT);
         if ctrl {
             match key {
                 0x7a if shift => self.redo(),

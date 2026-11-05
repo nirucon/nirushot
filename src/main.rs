@@ -1,4 +1,5 @@
 mod edit;
+mod keys;
 mod monitor;
 mod review;
 mod view;
