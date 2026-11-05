@@ -114,6 +114,7 @@ impl Fixture {
         self.dir.path().join(name)
     }
 
+    #[allow(dead_code)]
     fn clipboard_count(&self) -> usize {
         fs::read_to_string(self.path("xclip.log"))
             .map(|s| s.lines().count())
@@ -157,6 +158,11 @@ fn open_review(bin: &Path, x: &Xvfb, fixture: &Fixture, out: &Path) -> Review {
         .stdout(Stdio::null())
         .spawn()
         .expect("start nirushot");
+    let mut review = Review {
+        child,
+        window: String::new(),
+        display: x.display.clone(),
+    };
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let found = Command::new("xdotool")
@@ -166,11 +172,7 @@ fn open_review(bin: &Path, x: &Xvfb, fixture: &Fixture, out: &Path) -> Review {
             .expect("xdotool is installed");
         let text = String::from_utf8_lossy(&found.stdout);
         if let Some(window) = text.lines().next() {
-            let review = Review {
-                child,
-                window: window.trim().to_string(),
-                display: x.display.clone(),
-            };
+            review.window = window.trim().to_string();
             // The first frame is drawn after the map; let it settle.
             review.settle();
             return review;
@@ -259,6 +261,43 @@ impl Review {
             thread::sleep(Duration::from_millis(50));
         }
         panic!("review did not close");
+    }
+}
+
+/// Runs the same rectangle drag and save, returning the CPU used by the drag
+/// (press, 60 motions, release and the redraw that follows) and the export.
+fn rectangle_drag(bin: &Path) -> (Duration, RgbaImage) {
+    let x = start_xvfb(3840, 2160);
+    let fixture = Fixture::new(3840, 2160);
+    let out = fixture.path("out.png");
+    let mut review = open_review(bin, &x, &fixture, &out);
+    review.key("r");
+    review.settle();
+    let before = review.cpu();
+    review.drag((400, 300), (1600, 1100), 60, 1);
+    review.settle();
+    let used = review.cpu() - before;
+    review.key("s");
+    review.wait_exit();
+    (used, image::open(&out).unwrap().to_rgba8())
+}
+
+#[test]
+#[ignore = "needs Xvfb and xdotool"]
+fn h2_4k_rectangle_drag_stays_within_cpu_budget() {
+    let (used, export) = rectangle_drag(&binary());
+    eprintln!("4K 60-step rectangle drag: {} ms CPU", used.as_millis());
+    assert!(
+        used <= Duration::from_millis(300),
+        "drag used {used:?} of CPU"
+    );
+    let original = fixture_image(3840, 2160);
+    assert_eq!(export.dimensions(), original.dimensions());
+    assert_ne!(export, original, "the rectangle is in the export");
+    if let Some(reference) = env::var_os("NIRUSHOT_REFERENCE_BIN") {
+        let (old_cpu, old) = rectangle_drag(Path::new(&reference));
+        eprintln!("reference binary: {} ms CPU", old_cpu.as_millis());
+        assert!(old == export, "export differs from the reference binary");
     }
 }
 

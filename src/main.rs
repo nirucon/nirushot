@@ -1,9 +1,12 @@
+mod view;
+
 use std::{
     env,
     fs::File,
     io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
@@ -304,6 +307,10 @@ fn fill_rect(image: &mut RgbaImage, x: i32, y: i32, w: i32, h: i32, colour: Rgba
         }
     }
 }
+use view::{
+    draw_preview, intersect, next_event, preview_bounds, put_bytes, to_x_bytes, view_layout,
+    view_rect, Area, Layout, Preview, RefineTimer, ViewCache, ViewKey, TOOLBAR,
+};
 use x11rb::{
     connection::Connection,
     protocol::{xproto::*, Event},
@@ -317,48 +324,6 @@ fn key_name(c: &RustConnection, code: u8) -> u32 {
         .and_then(|r| r.reply().ok())
         .and_then(|m| m.keysyms.first().copied())
         .unwrap_or(0)
-}
-
-fn to_x_bytes(c: &RustConnection, img: &RgbaImage) -> Vec<u8> {
-    let mut data = Vec::with_capacity(img.width() as usize * img.height() as usize * 4);
-    let bgr = c.setup().image_byte_order == ImageOrder::LSB_FIRST;
-    for p in img.pixels() {
-        if bgr {
-            data.extend([p[2], p[1], p[0], 255]);
-        } else {
-            data.extend([p[0], p[1], p[2], 255]);
-        }
-    }
-    data
-}
-
-fn put_image(c: &RustConnection, win: Window, gc: Gcontext, img: &RgbaImage) -> Result<(), String> {
-    let data = to_x_bytes(c, img);
-    let width = img.width().max(1);
-    let height = img.height().max(1);
-    let row_bytes = width as usize * 4;
-    let max_rows = (250_000 / row_bytes).max(1) as u32;
-    let mut y = 0;
-    while y < height {
-        let rows = max_rows.min(height - y);
-        let start = y as usize * row_bytes;
-        let end = start + rows as usize * row_bytes;
-        c.put_image(
-            ImageFormat::Z_PIXMAP,
-            win,
-            gc,
-            width as u16,
-            rows as u16,
-            0,
-            y as i16,
-            0,
-            c.setup().roots[0].root_depth,
-            &data[start..end],
-        )
-        .map_err(|e| format!("put_image: {e}"))?;
-        y += rows;
-    }
-    c.flush().map_err(|e| e.to_string())
 }
 
 fn draw_rect(img: &mut RgbaImage, x: i32, y: i32, w: i32, h: i32, colour: Rgba<u8>) {
@@ -429,8 +394,6 @@ fn line(img: &mut RgbaImage, mut x0: i32, mut y0: i32, x1: i32, y1: i32, colour:
     }
 }
 
-const TOOLBAR: u32 = 52;
-
 fn toolbar_mode(font: &FontArc, x: i32) -> Option<u8> {
     let mut pos = 118.0;
     for (key, label) in [
@@ -461,6 +424,219 @@ fn close_review(c: &RustConnection, win: Window, temp: &Path) {
     let _ = c.flush();
 }
 
+fn draw_toolbar(
+    canvas: &mut RgbaImage,
+    theme: &Theme,
+    font: Option<&FontArc>,
+    mode: u8,
+    zoom: f32,
+) {
+    let win_w = canvas.width();
+    fill_rect(
+        canvas,
+        0,
+        0,
+        win_w as i32,
+        TOOLBAR as i32,
+        rgb(theme.surface),
+    );
+    fill_rect(canvas, 0, 0, win_w as i32, 2, rgb(theme.accent));
+    fill_rect(
+        canvas,
+        0,
+        TOOLBAR as i32 - 1,
+        win_w as i32,
+        1,
+        rgb(theme.border),
+    );
+    let Some(font) = font else {
+        return;
+    };
+    draw_text(
+        canvas,
+        font,
+        14.0,
+        16.0,
+        10.0,
+        "NIRUSHOT",
+        rgb(theme.foreground),
+    );
+    let mut pos = 118.0;
+    for (key, label) in [
+        (b'c', "Crop"),
+        (b'r', "Rect"),
+        (b'a', "Arrow"),
+        (b'm', "Mask"),
+    ] {
+        let width = 28.0 + text_width(font, 12.0, label);
+        let active = mode == key;
+        if active {
+            fill_rect(
+                canvas,
+                pos as i32,
+                13,
+                width as i32,
+                26,
+                rgb(theme.foreground),
+            );
+        }
+        let colour = if active {
+            rgb(theme.background)
+        } else {
+            rgb(theme.muted)
+        };
+        draw_text(canvas, font, 12.0, pos + 9.0, 20.0, label, colour);
+        pos += width + 8.0;
+    }
+    let zoom_label = if (zoom - 1.0).abs() < 0.01 {
+        "fit".to_string()
+    } else {
+        format!("{:.0}%", zoom * 100.0)
+    };
+    draw_text(
+        canvas,
+        font,
+        12.0,
+        pos + 10.0,
+        20.0,
+        &zoom_label,
+        rgb(theme.muted),
+    );
+    let line1 = "s save   y copy   u share   esc close";
+    let line2 = "+/- zoom   0 fit   v view";
+    let hint_width = text_width(font, 11.0, line1).max(text_width(font, 11.0, line2));
+    let hint_x = win_w as f32 - hint_width - 16.0;
+    draw_text(canvas, font, 11.0, hint_x, 7.0, line1, rgb(theme.muted));
+    draw_text(canvas, font, 11.0, hint_x, 27.0, line2, rgb(theme.muted));
+}
+
+/// The composed frame lives in a server pixmap the size of the window.
+struct Frame {
+    pixmap: Pixmap,
+    bytes: Vec<u8>,
+    toolbar: RgbaImage,
+}
+
+impl Frame {
+    fn new(c: &RustConnection, win: Window, depth: u8, w: u32, h: u32) -> Result<Self, String> {
+        let pixmap = c.generate_id().map_err(|e| e.to_string())?;
+        c.create_pixmap(depth, pixmap, win, w as u16, h as u16)
+            .map_err(|e| e.to_string())?;
+        Ok(Self {
+            pixmap,
+            bytes: Vec::new(),
+            toolbar: RgbaImage::new(w, TOOLBAR),
+        })
+    }
+}
+
+/// Everything needed to paint the image area of the frame.
+struct Painter<'a> {
+    c: &'a RustConnection,
+    gc: Gcontext,
+    depth: u8,
+    lsb_first: bool,
+    background: Rgba<u8>,
+}
+
+impl Painter<'_> {
+    fn pixel(&self, p: &Rgba<u8>) -> [u8; 4] {
+        if self.lsb_first {
+            [p[2], p[1], p[0], 255]
+        } else {
+            [p[0], p[1], p[2], 255]
+        }
+    }
+
+    /// Paint window area `area` (background plus cached view) into the
+    /// pixmap and copy it to the window.
+    fn area(
+        &self,
+        frame: &mut Frame,
+        win: Window,
+        cache: &ViewCache,
+        layout: &Layout,
+        area: Area,
+    ) -> Result<(), String> {
+        let (ax, ay, aw, ah) = area;
+        if aw <= 0 || ah <= 0 {
+            return Ok(());
+        }
+        let bg = self.pixel(&self.background);
+        let bytes = &mut frame.bytes;
+        bytes.clear();
+        bytes.resize(aw as usize * ah as usize * 4, 0);
+        for px in bytes.chunks_exact_mut(4) {
+            px.copy_from_slice(&bg);
+        }
+        if let Some(key) = cache.key {
+            let (ox, oy) = layout.origin();
+            let placed = (ox + key.rect.0, oy + key.rect.1, key.rect.2, key.rect.3);
+            if let Some((x, y, w, h)) = intersect(placed, area) {
+                let src = cache.image.as_raw();
+                let stride = cache.image.width() as usize * 4;
+                for row in 0..h {
+                    let sy = (y - placed.1 + row) as usize;
+                    let sx = (x - placed.0) as usize;
+                    let from = &src[sy * stride + sx * 4..sy * stride + (sx + w as usize) * 4];
+                    let dy = (y - ay + row) as usize;
+                    let dx = (x - ax) as usize;
+                    let to = &mut bytes
+                        [(dy * aw as usize + dx) * 4..(dy * aw as usize + dx + w as usize) * 4];
+                    for (d, s) in to.chunks_exact_mut(4).zip(from.chunks_exact(4)) {
+                        d.copy_from_slice(&self.pixel(&Rgba([s[0], s[1], s[2], 255])));
+                    }
+                }
+            }
+        }
+        put_bytes(
+            self.c,
+            frame.pixmap,
+            self.gc,
+            self.depth,
+            ax as i16,
+            ay as i16,
+            aw as u32,
+            ah as u32,
+            bytes,
+        )?;
+        self.c
+            .copy_area(
+                frame.pixmap,
+                win,
+                self.gc,
+                ax as i16,
+                ay as i16,
+                ax as i16,
+                ay as i16,
+                aw as u16,
+                ah as u16,
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    fn toolbar(&self, frame: &mut Frame, win: Window) -> Result<(), String> {
+        to_x_bytes(self.lsb_first, &frame.toolbar, &mut frame.bytes);
+        let (w, h) = frame.toolbar.dimensions();
+        put_bytes(
+            self.c,
+            frame.pixmap,
+            self.gc,
+            self.depth,
+            0,
+            0,
+            w,
+            h,
+            &frame.bytes,
+        )?;
+        self.c
+            .copy_area(frame.pixmap, win, self.gc, 0, 0, 0, 0, w as u16, h as u16)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
 fn review(
     mut image: RgbaImage,
     temp: &Path,
@@ -468,7 +644,10 @@ fn review(
     notify_enabled: bool,
 ) -> Result<(), String> {
     let (c, screen) = x11rb::connect(None).map_err(|e| e.to_string())?;
+    let c = Arc::new(c);
     let root = c.setup().roots[screen].root;
+    let depth = c.setup().roots[screen].root_depth;
+    let lsb_first = c.setup().image_byte_order == ImageOrder::LSB_FIRST;
     let sw = c.setup().roots[screen].width_in_pixels as u32;
     let sh = c.setup().roots[screen].height_in_pixels as u32;
     let max_w = (sw as f32 * 0.90).max(320.0);
@@ -482,6 +661,7 @@ fn review(
     let mut win_h = TOOLBAR + (image.height() as f32 * initial).max(1.0) as u32;
     let win = c.generate_id().map_err(|e| e.to_string())?;
     let gc = c.generate_id().map_err(|e| e.to_string())?;
+    let preview_gc = c.generate_id().map_err(|e| e.to_string())?;
     let x = ((sw as i32 - win_w as i32) / 2).max(0) as i16;
     let y = ((sh as i32 - win_h as i32) / 2).max(0) as i16;
     c.create_window(
@@ -508,7 +688,9 @@ fn review(
             ),
     )
     .map_err(|e| e.to_string())?;
-    c.create_gc(gc, win, &CreateGCAux::new())
+    c.create_gc(gc, win, &CreateGCAux::new().graphics_exposures(0))
+        .map_err(|e| e.to_string())?;
+    c.create_gc(preview_gc, win, &CreateGCAux::new().graphics_exposures(0))
         .map_err(|e| e.to_string())?;
     c.change_property8(
         PropMode::REPLACE,
@@ -534,6 +716,7 @@ fn review(
     }
     let wm_protocols = intern_atom(&c, "WM_PROTOCOLS").unwrap_or(0);
     let wm_delete = intern_atom(&c, "WM_DELETE_WINDOW").unwrap_or(0);
+    let refine_atom = intern_atom(&c, "_NIRUSHOT_REFINE").unwrap_or(0);
     if wm_protocols != 0 && wm_delete != 0 {
         let _ = c.change_property32(
             PropMode::REPLACE,
@@ -543,8 +726,10 @@ fn review(
             &[wm_delete],
         );
     }
+    let mut frame = Frame::new(&c, win, depth, win_w, win_h)?;
     c.map_window(win).map_err(|e| e.to_string())?;
     c.flush().map_err(|e| e.to_string())?;
+    let mut refine = RefineTimer::new(Arc::clone(&c), win, refine_atom);
     let theme = load_theme();
     let font = load_font();
     let mut mode = b'0';
@@ -553,152 +738,135 @@ fn review(
     let mut drag: Option<(i32, i32)> = None;
     let mut current: Option<(i32, i32)> = None;
     let mut pan_drag: Option<(i32, i32, f32, f32)> = None;
+    let mut generation = 0u64;
+    let mut cache = ViewCache::default();
+    let mut fine = false;
+    let mut need_frame = true;
+    let mut need_toolbar = true;
+    // Image areas changed by the last annotation, re-scaled on their own.
+    let mut changed: Vec<Area> = Vec::new();
+    let painter = Painter {
+        c: &c,
+        gc,
+        depth,
+        lsb_first,
+        background: rgb(theme.background),
+    };
+    let mut need_preview = false;
+    let mut drawn: Option<(i32, i32, i32, i32)> = None;
+    let mut pending: Option<Event> = None;
+    let mut layout = view_layout(image.dimensions(), (win_w, win_h), zoom, pan);
     loop {
-        let mut canvas = RgbaImage::from_pixel(win_w, win_h, rgb(theme.background));
-        let avail_w = win_w as f32;
-        let avail_h = (win_h.saturating_sub(TOOLBAR)) as f32;
-        let fit = (avail_w / image.width() as f32)
-            .min(avail_h / image.height() as f32)
-            .min(2.0);
-        let view_scale = (fit * zoom).clamp(0.03, 8.0);
-        let disp_w = (image.width() as f32 * view_scale).max(1.0) as u32;
-        let disp_h = (image.height() as f32 * view_scale).max(1.0) as u32;
-        let image_x = ((win_w as f32 - disp_w as f32) / 2.0 + pan.0).round();
-        let image_y = TOOLBAR as f32 + ((avail_h - disp_h as f32) / 2.0 + pan.1).round();
-        let display = if disp_w == image.width() && disp_h == image.height() {
-            image.clone()
-        } else {
-            image::imageops::resize(
-                &image,
-                disp_w,
-                disp_h,
-                image::imageops::FilterType::Lanczos3,
-            )
-        };
-        image::imageops::overlay(&mut canvas, &display, image_x as i64, image_y as i64);
-        if let (Some((x0, y0)), Some((x1, y1))) = (drag, current) {
-            let left = x0.min(x1);
-            let top = y0.min(y1);
-            let width = (x1 - x0).abs();
-            let height = (y1 - y0).abs();
-            match mode {
-                b'r' => draw_rect(
-                    &mut canvas,
-                    left,
-                    top,
-                    width,
-                    height,
-                    Rgba([220, 70, 70, 255]),
-                ),
-                b'm' => fill_rect(&mut canvas, left, top, width, height, Rgba([0, 0, 0, 255])),
-                b'a' => arrow(&mut canvas, x0, y0, x1, y1, Rgba([220, 70, 70, 255])),
-                b'c' => draw_rect(
-                    &mut canvas,
-                    left,
-                    top,
-                    width,
-                    height,
-                    Rgba([220, 200, 140, 255]),
-                ),
-                _ => {}
-            }
+        if need_frame || need_toolbar {
+            draw_toolbar(&mut frame.toolbar, &theme, font.as_ref(), mode, zoom);
+            painter.toolbar(&mut frame, win)?;
+            need_toolbar = false;
         }
-        fill_rect(
-            &mut canvas,
-            0,
-            0,
-            win_w as i32,
-            TOOLBAR as i32,
-            rgb(theme.surface),
-        );
-        fill_rect(&mut canvas, 0, 0, win_w as i32, 2, rgb(theme.accent));
-        fill_rect(
-            &mut canvas,
-            0,
-            TOOLBAR as i32 - 1,
-            win_w as i32,
-            1,
-            rgb(theme.border),
-        );
-        if let Some(font) = &font {
-            draw_text(
-                &mut canvas,
-                font,
-                14.0,
-                16.0,
-                10.0,
-                "NIRUSHOT",
-                rgb(theme.foreground),
-            );
-            let mut pos = 118.0;
-            for (key, label) in [
-                (b'c', "Crop"),
-                (b'r', "Rect"),
-                (b'a', "Arrow"),
-                (b'm', "Mask"),
-            ] {
-                let width = 28.0 + text_width(font, 12.0, label);
-                let active = mode == key;
-                if active {
-                    fill_rect(
-                        &mut canvas,
-                        pos as i32,
-                        13,
-                        width as i32,
-                        26,
-                        rgb(theme.foreground),
-                    );
-                }
-                let colour = if active {
-                    rgb(theme.background)
-                } else {
-                    rgb(theme.muted)
+        if need_frame {
+            layout = view_layout(image.dimensions(), (win_w, win_h), zoom, pan);
+            if let Some(rect) = view_rect(&layout, (win_w, win_h)) {
+                let key = ViewKey {
+                    generation,
+                    disp: (layout.disp_w, layout.disp_h),
+                    rect,
                 };
-                draw_text(&mut canvas, font, 12.0, pos + 9.0, 20.0, label, colour);
-                pos += width + 8.0;
-            }
-            let zoom_label = if (zoom - 1.0).abs() < 0.01 {
-                "fit".to_string()
+                if cache.update(&image, key, fine) {
+                    refine.schedule();
+                }
             } else {
-                format!("{:.0}%", zoom * 100.0)
+                cache.key = None;
+            }
+            painter.area(&mut frame, win, &cache, &layout, image_area(win_w, win_h))?;
+            let clip = Rectangle {
+                x: 0,
+                y: TOOLBAR as i16,
+                width: win_w as u16,
+                height: win_h.saturating_sub(TOOLBAR) as u16,
             };
-            draw_text(
-                &mut canvas,
-                font,
-                12.0,
-                pos + 10.0,
-                20.0,
-                &zoom_label,
-                rgb(theme.muted),
-            );
-            let line1 = "s save   y copy   u share   esc close";
-            let line2 = "+/- zoom   0 fit   v view";
-            let hint_width = text_width(font, 11.0, line1).max(text_width(font, 11.0, line2));
-            let hint_x = win_w as f32 - hint_width - 16.0;
-            draw_text(
-                &mut canvas,
-                font,
-                11.0,
-                hint_x,
-                7.0,
-                line1,
-                rgb(theme.muted),
-            );
-            draw_text(
-                &mut canvas,
-                font,
-                11.0,
-                hint_x,
-                27.0,
-                line2,
-                rgb(theme.muted),
-            );
+            c.set_clip_rectangles(ClipOrdering::UNSORTED, preview_gc, 0, 0, &[clip])
+                .map_err(|e| e.to_string())?;
+            changed.clear();
+            drawn = None;
+            need_frame = false;
+            need_preview = true;
+        } else if !changed.is_empty() {
+            match cache.patch(&image, generation, &changed) {
+                Some(areas) => {
+                    let (ox, oy) = layout.origin();
+                    for (x, y, w, h) in areas {
+                        if let Some(area) =
+                            intersect((ox + x, oy + y, w, h), image_area(win_w, win_h))
+                        {
+                            painter.area(&mut frame, win, &cache, &layout, area)?;
+                        }
+                    }
+                    need_preview = true;
+                }
+                None => need_frame = true,
+            }
+            changed.clear();
+            if need_frame {
+                continue;
+            }
         }
-        put_image(&c, win, gc, &canvas)?;
-        let event = c.wait_for_event().map_err(|e| e.to_string())?;
+        if need_preview {
+            if let Some((x, y, w, h)) = drawn.take() {
+                let x0 = x.clamp(0, win_w as i32);
+                let y0 = y.clamp(0, win_h as i32);
+                let x1 = (x + w).clamp(0, win_w as i32);
+                let y1 = (y + h).clamp(0, win_h as i32);
+                if x1 > x0 && y1 > y0 {
+                    c.copy_area(
+                        frame.pixmap,
+                        win,
+                        gc,
+                        x0 as i16,
+                        y0 as i16,
+                        x0 as i16,
+                        y0 as i16,
+                        (x1 - x0) as u16,
+                        (y1 - y0) as u16,
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+            }
+            if let (Some(from), Some(to)) = (drag, current) {
+                let colour = match mode {
+                    b'm' => 0x000000,
+                    b'c' => 0xdcc88c,
+                    _ => 0xdc4646,
+                };
+                let preview = Preview {
+                    mode,
+                    from,
+                    to,
+                    colour,
+                    stroke: 3,
+                };
+                draw_preview(&c, win, preview_gc, &preview)?;
+                drawn = Some(preview_bounds(&preview));
+            }
+            need_preview = false;
+        }
+        c.flush().map_err(|e| e.to_string())?;
+        let event = next_event(&c, &mut pending)?;
         match event {
             Event::Expose(e) if e.window == win => {
-                put_image(&c, win, gc, &canvas)?;
+                c.copy_area(
+                    frame.pixmap,
+                    win,
+                    gc,
+                    e.x as i16,
+                    e.y as i16,
+                    e.x as i16,
+                    e.y as i16,
+                    e.width,
+                    e.height,
+                )
+                .map_err(|e| e.to_string())?;
+                if drawn.is_some() {
+                    need_preview = true;
+                }
             }
             Event::MapNotify(e) if e.window == win => {
                 // A normal focused dialog: no keyboard or pointer grab. An
@@ -706,7 +874,6 @@ fn review(
                 // taking input while a review is left open. Drags still get
                 // X's implicit button grab, which ends on release.
                 let _ = c.set_input_focus(InputFocus::PARENT, win, x11rb::CURRENT_TIME);
-                c.flush().ok();
             }
             Event::ClientMessage(e)
                 if e.window == win
@@ -716,10 +883,20 @@ fn review(
                 close_review(&c, win, temp);
                 return Ok(());
             }
+            Event::ClientMessage(e) if e.window == win && e.type_ == refine_atom => {
+                if refine.is_current(e.data.as_data32()[0]) && !fine {
+                    fine = true;
+                    need_frame = true;
+                }
+            }
             Event::ConfigureNotify(e) if e.window == win => {
                 if e.width as u32 != win_w || e.height as u32 != win_h {
                     win_w = e.width.max(320) as u32;
                     win_h = e.height.max(TOOLBAR as u16 + 80) as u32;
+                    let _ = c.free_pixmap(frame.pixmap);
+                    frame = Frame::new(&c, win, depth, win_w, win_h)?;
+                    fine = false;
+                    need_frame = true;
                 }
             }
             Event::ButtonPress(e) if e.event == win => {
@@ -731,6 +908,8 @@ fn review(
                         (zoom / 1.25).max(0.1)
                     };
                     pan = (0.0, 0.0);
+                    fine = false;
+                    need_frame = true;
                     continue;
                 }
                 if e.detail == 2 {
@@ -744,6 +923,7 @@ fn review(
                     if let Some(font) = &font {
                         if let Some(selected) = toolbar_mode(font, e.event_x as i32) {
                             mode = selected;
+                            need_toolbar = true;
                         }
                     }
                     continue;
@@ -753,6 +933,7 @@ fn review(
                 } else {
                     drag = Some((e.event_x as i32, e.event_y as i32));
                     current = drag;
+                    need_preview = true;
                 }
             }
             Event::MotionNotify(e) => {
@@ -761,8 +942,11 @@ fn review(
                         px + (e.event_x as i32 - sx) as f32,
                         py + (e.event_y as i32 - sy) as f32,
                     );
+                    fine = false;
+                    need_frame = true;
                 } else if drag.is_some() {
                     current = Some((e.event_x as i32, e.event_y as i32));
+                    need_preview = true;
                 }
             }
             Event::ButtonRelease(e) if e.event == win => {
@@ -770,17 +954,11 @@ fn review(
                     pan_drag = None;
                 }
                 if e.detail == 1 {
-                    if let (Some((x0, y0)), Some((x1, y1))) = (drag.take(), current) {
-                        let to_image = |x: i32, y: i32| {
-                            let ix = ((x as f32 - image_x) / view_scale).round() as i32;
-                            let iy = ((y as f32 - image_y) / view_scale).round() as i32;
-                            (
-                                ix.clamp(0, image.width() as i32),
-                                iy.clamp(0, image.height() as i32),
-                            )
-                        };
-                        let (ix0, iy0) = to_image(x0, y0);
-                        let (ix1, iy1) = to_image(x1, y1);
+                    need_preview = true;
+                    if let (Some((x0, y0)), Some((x1, y1))) = (drag.take(), current.take()) {
+                        let dims = image.dimensions();
+                        let (ix0, iy0) = layout.image_point(dims, x0, y0);
+                        let (ix1, iy1) = layout.image_point(dims, x1, y1);
                         let left = ix0.min(ix1) as u32;
                         let top = iy0.min(iy1) as u32;
                         let width = (ix1 - ix0).unsigned_abs();
@@ -796,6 +974,7 @@ fn review(
                                             .to_image();
                                     zoom = 1.0;
                                     pan = (0.0, 0.0);
+                                    need_frame = true;
                                 }
                                 b'r' => draw_rect(
                                     &mut image,
@@ -818,6 +997,9 @@ fn review(
                                 }
                                 _ => {}
                             }
+                            generation += 1;
+                            changed =
+                                changed_areas(mode, ix0, iy0, ix1, iy1, (left, top, width, height));
                         }
                     }
                 }
@@ -829,22 +1011,31 @@ fn review(
                         close_review(&c, win, temp);
                         return Ok(());
                     }
-                    0x63 => mode = b'c',
-                    0x72 => mode = b'r',
-                    0x61 => mode = b'a',
-                    0x6d => mode = b'm',
-                    0x76 => mode = b'0',
+                    0x63 | 0x72 | 0x61 | 0x6d | 0x76 => {
+                        mode = match key {
+                            0x63 => b'c',
+                            0x72 => b'r',
+                            0x61 => b'a',
+                            0x6d => b'm',
+                            _ => b'0',
+                        };
+                        need_toolbar = true;
+                        continue;
+                    }
                     0x2b | 0x3d | 0xffab => {
                         zoom = (zoom * 1.25).min(8.0);
                         pan = (0.0, 0.0);
+                        fine = false;
                     }
                     0x2d | 0xffad => {
                         zoom = (zoom / 1.25).max(0.1);
                         pan = (0.0, 0.0);
+                        fine = false;
                     }
                     0x30 | 0x66 => {
                         zoom = 1.0;
                         pan = (0.0, 0.0);
+                        fine = false;
                     }
                     0x73 | 0xff0d => {
                         let path = save.map(Path::to_path_buf).unwrap_or_else(default_path);
@@ -894,12 +1085,53 @@ fn review(
                         close_review(&c, win, temp);
                         return Ok(());
                     }
-                    _ => {}
+                    _ => continue,
                 }
+                // Any handled key may change the toolbar or the view.
+                need_frame = true;
             }
             Event::Error(e) => eprintln!("nirushot: X11 error: {e:?}"),
             _ => {}
         }
+    }
+}
+
+fn image_area(win_w: u32, win_h: u32) -> Area {
+    (
+        0,
+        TOOLBAR as i32,
+        win_w as i32,
+        win_h.saturating_sub(TOOLBAR) as i32,
+    )
+}
+
+/// Image areas an annotation drew into.
+fn changed_areas(
+    mode: u8,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    rect: (u32, u32, u32, u32),
+) -> Vec<Area> {
+    let (l, t, w, h) = (rect.0 as i32, rect.1 as i32, rect.2 as i32, rect.3 as i32);
+    match mode {
+        b'r' => vec![
+            (l, t, w, 3),
+            (l, t + h - 3, w, 3),
+            (l, t, 3, h),
+            (l + w - 3, t, 3, h),
+        ],
+        b'a' => {
+            let pad = 18;
+            vec![(
+                x0.min(x1) - pad,
+                y0.min(y1) - pad,
+                (x1 - x0).abs() + 2 * pad,
+                (y1 - y0).abs() + 2 * pad,
+            )]
+        }
+        _ => vec![(l, t, w, h)],
     }
 }
 
