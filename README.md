@@ -85,6 +85,10 @@ installed `notify-send` supports actions; otherwise a plain notification is
 shown. `--no-notify` suppresses it. NIRUSHOT does not start a notification
 service.
 
+When NIRUNOTIFY runs, the capture plays the NIRUX `screenshot` sound: one line
+on NIRUNOTIFY's control socket, no process and no new dependency. Switch it in
+`~/.config/nirux/sounds.toml` (`nirux sounds toggle screenshot`).
+
 ## Runtime
 
 - `maim` capture

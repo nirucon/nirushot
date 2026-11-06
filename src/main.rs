@@ -2,6 +2,7 @@ mod edit;
 mod keys;
 mod monitor;
 mod review;
+mod sound;
 mod view;
 
 use std::{
@@ -446,6 +447,8 @@ fn main() {
     if let Err(e) = run("maim", &maim) {
         fail_clean(&format!("capture failed: {e}"));
     }
+    // The shutter: the picture is taken now, whatever happens next.
+    sound::play("screenshot");
     // A capture is always available for paste. Review may replace it with an
     // edited image, but Save or Review must never leave the clipboard empty.
     let copied_initial = copy_to_clipboard(&temp);

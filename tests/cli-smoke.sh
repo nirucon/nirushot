@@ -37,7 +37,7 @@ cat > "$T/bin/notify-send" <<'EOF'
 printf '1\n' > "$NIRUSHOT_FIXTURE/notified"
 EOF
 chmod +x "$T/bin/"*
-"$BIN" --version | grep -q "NIRUSHOT 0.5.0"
+"$BIN" --version | grep -q "NIRUSHOT 0.5.1"
 if "$BIN" --delay nope >/dev/null 2>&1; then echo 'FAIL invalid delay accepted' >&2; exit 1; fi
 if "$BIN" --save >/dev/null 2>&1; then echo 'FAIL missing save path accepted' >&2; exit 1; fi
 "$BIN" --region --save "$T/region.png" > "$T/out"
@@ -73,4 +73,24 @@ grep -q 'xclip exited with' "$T/copy-fail.err" || {
 }
 # No private capture directory may outlive a run, including a failed one.
 if ls "$TMPDIR"/nirushot-* >/dev/null 2>&1; then echo 'FAIL capture directory left behind' >&2; exit 1; fi
-echo 'PASS: region/full capture, save, clipboard, failed-copy detection, cleanup and notification'
+# The shutter sound is one line to a running NIRUNOTIFY, and nothing at all
+# without one.
+export XDG_RUNTIME_DIR="$T/run"
+mkdir -p "$XDG_RUNTIME_DIR"
+printf '#!/bin/sh\nexit 0\n' > "$T/bin/xclip"
+"$BIN" --full --copy --no-notify >/dev/null
+SOCK="$XDG_RUNTIME_DIR/nirunotify-$(id -u).sock"
+python3 -c '
+import socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.bind(sys.argv[1]); s.listen(1); s.settimeout(10)
+c, _ = s.accept()
+data = c.recv(64)
+c.sendall(b"ok\n"); c.close()
+open(sys.argv[2], "wb").write(data)
+' "$SOCK" "$T/sound" &
+for _ in $(seq 1 100); do [ -S "$SOCK" ] && break; sleep .02; done
+"$BIN" --full --copy --no-notify >/dev/null
+wait
+grep -qxF 'sound screenshot' "$T/sound" || { echo 'FAIL no shutter sound request' >&2; exit 1; }
+echo 'PASS: region/full capture, save, clipboard, failed-copy detection, cleanup, notification and shutter sound'
