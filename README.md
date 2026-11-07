@@ -1,106 +1,174 @@
 # NIRUSHOT
 
-**Part of [NIRUX - A minimal X11 desktop by Nicklas Rudolfsson](https://github.com/nirucon/nirux).**
+On-demand screenshot capture, review and annotation for the NIRUX X11 desktop.
 
-**Early beta.** On-demand screenshot capture, review and annotation for the NIRUX X11 desktop.
-No daemon, upload service or background process.
+**Status: beta** · Part of the [NIRUX](https://github.com/nirucon/nirux) suite · [MIT License](LICENSE)
 
+![NIRUSHOT](docs/screenshots/main.png)
+
+## About
+
+NIRUSHOT takes a screenshot of a region, a window or the whole screen, puts it
+on the clipboard straight away and opens a small review window where you can
+crop, annotate, mask and share it before saving. There is no daemon, upload
+service or background process: it runs when you press the key and exits when
+you are done.
+
+## Features
+
+- Region (`slop`), active window or full-screen capture with `maim`, with an
+  optional delay.
+- The original capture is **always** copied to the clipboard before review
+  opens; Cancel leaves no file, but the capture stays pasteable.
+- Review and annotation: crop, rectangle, arrow, opaque black mask, highlight
+  (everything outside is dimmed to 50 %) and one-line text.
+- Non-destructive editing: every edit is an operation over the untouched
+  capture, with undo/redo (last 100 steps).
+- Six colours (theme focus colour, red, yellow, green, white, black) and
+  thin/medium/thick strokes; S/M/L text sizes in the theme font.
+- Zoom and pan that stay smooth on large captures.
+- Save, copy or share with [NIRUSHARE](https://github.com/nirucon/nirushare).
+- Notification with Open, Copy and Show in folder actions after saving.
+- Plays the NIRUX `screenshot` sound through NIRUNOTIFY when it runs.
+- Follows the active NIRUX theme and configured monospace font; keys follow
+  the active keyboard layout (Shift, AltGr, Caps Lock, Num Lock).
+
+## Requirements
+
+- X11 (Debian, Arch and Void glibc, x86_64).
+- `maim` (capture), `slop` (region selection), `xprop` (active window),
+  `xclip` (clipboard).
+- Optional: `notify-send` (notifications) and `xdg-open` (notification
+  actions).
+
+NIRUX installs all of these.
+
+## Installation
+
+### With NIRUX
+
+NIRUSHOT is a core component: `nirux install` and `nirux update` install and
+update it as part of the pinned suite generation. The standalone installer
+refuses to touch a NIRUX-managed copy; use `nirux update` instead.
+
+### Standalone
+
+```sh
+./install.sh            # download the pinned release binary, verify SHA256SUMS, install to ~/.local/bin
+./install.sh --build    # build from this checkout with cargo and install it
+```
+
+`NIRUSHOT_PREFIX` changes the prefix (default `~/.local`).
 
 ## Usage
 
 ```sh
-nirushot --region
-nirushot --window
-nirushot --full
-nirushot --region --delay 3
+nirushot --region                         # select a region (default)
+nirushot --window                         # the active window
+nirushot --full                           # all monitors
+nirushot --region --delay 3               # wait three seconds first
 nirushot --region --save ~/Pictures/shot.png
-nirushot --full --copy
+nirushot --full --copy                    # clipboard only, no review
+nirushot --full --save shot.png --review  # save to that path from the review
+nirushot --no-notify                      # no notification after saving
 ```
 
-A capture is always copied to the clipboard. Without `--copy` or `--save`, it
-also opens in a review dialog. `--save` writes the chosen file; `--copy` skips
-review. Saving or copying an edited review replaces the clipboard with the edited
-image. Cancel leaves no file, but the initial capture remains pasteable.
+Without `--copy` or `--save` the capture opens in review. `--save PATH` writes
+that file, `--copy` skips review, and `--review` opens review anyway. Saving or
+copying an edited review replaces the clipboard with the edited image.
 
-## Review controls
+Default NIRUWM bindings:
 
-- `c` then drag: crop
-- `r` then drag: rectangle
-- `a` then drag: arrow
-- `m` then drag: opaque black mask
-- `h` then drag: highlight; everything outside the area is dimmed to 50 %
-  (several highlights share one dimming, and annotations are never dimmed)
-- `t` then click: type one line of text; Enter places it, Escape cancels it.
-  S/M/L in the toolbar pick the size; the theme font is used
-- `1`–`6` or the swatches: colour for rectangles, arrows and text — the
-  theme's focus colour, red (the default), yellow, green, white, black
-- `w` or the picker: thin/medium/thick stroke (S/M/L text size with the text
-  tool); medium is the stroke 0.4 always used
-- `v`: view/pan mode; drag the image, middle-drag, or hold Space and drag
-  with any tool to pan
-- Mouse wheel or `+`/`-`: zoom; `0`: fit
-- Ctrl+Z or the Undo button: undo; Ctrl+Shift+Z or Ctrl+Y: redo
-- `s`, Ctrl+S or Enter: save to `~/Pictures/Screenshot-YYYY-MM-DD_HH-MM-SS.png` and copy
-- `y` or Ctrl+C: copy without saving
-- Delete: remove the last annotation (undoable)
-- `u`: share with NIRU Share
-- The initial capture is already in the clipboard before review opens
-- Escape or the close button: discard (Escape first cancels a drag in progress)
+| Key | Action |
+|---|---|
+| `Print` | `nirushot --region` |
+| `Super+Print` | `nirushot --full` |
+| `Super+Shift+Print` | `nirushot --window` |
 
-## How editing works
+### Review controls
+
+| Key | Action |
+|---|---|
+| `c`, then drag | Crop |
+| `r`, then drag | Rectangle |
+| `a`, then drag | Arrow |
+| `m`, then drag | Opaque black mask |
+| `h`, then drag | Highlight (several highlights share one dimming; annotations are never dimmed) |
+| `t`, then click | Type one line of text; `Enter` places it, `Escape` cancels it |
+| `1`–`6` or the swatches | Colour for rectangles, arrows and text |
+| `w` or the picker | Thin/medium/thick stroke (S/M/L size with the text tool) |
+| `v` | View/pan mode; drag the image |
+| Middle-drag, or hold `Space` and drag | Pan with any tool |
+| Mouse wheel, `+`/`=`/`-` | Zoom |
+| `0` or `f` | Fit |
+| `Ctrl+Z` or Undo | Undo |
+| `Ctrl+Shift+Z`, `Ctrl+Y` | Redo |
+| `Delete` | Remove the last annotation (undoable) |
+| `s`, `Ctrl+S` or `Enter` | Save to `~/Pictures/Screenshot-YYYY-MM-DD_HH-MM-SS.png` and copy |
+| `y` or `Ctrl+C` | Copy without saving |
+| `u` | Share with NIRUSHARE |
+| `Escape` or the close button | Discard (`Escape` first cancels a drag in progress) |
+
+If a file with the default name already exists, `-2`, `-3` and so on are
+appended.
+
+### How editing works
 
 The captured image is never changed. Every crop, rectangle, arrow, mask,
-highlight and text is an operation in an ordered list, in the coordinates of the image it
-applies to (a crop starts new coordinates for what follows). What the dialog
-shows, and what Save, Copy and Share export, is that list drawn over the
-untouched capture. Undo and redo step through earlier lists, so a wrong crop
-is one Ctrl+Z away and nothing has to be discarded. The history keeps the
-last 100 steps; it stores operations, not image copies.
+highlight and text is an operation in an ordered list, in the coordinates of
+the image it applies to (a crop starts new coordinates for what follows). What
+the window shows, and what Save, Copy and Share export, is that list drawn over
+the untouched capture. Undo and redo step through earlier lists, so a wrong crop
+is one `Ctrl+Z` away. The history stores operations, not image copies.
 
-The mask is always opaque black, never a blur or pixelation, because those
-can leak what is underneath.
+The mask is always opaque black, never a blur or pixelation, because those can
+leak what is underneath.
 
-## Window
+### The review window
 
-The initial region selector uses a thick, opaque amber border so it remains
-visible on light and dark wallpapers. The review window is a centred floating
-X11 dialog, so NIRUWM does not tile it. It opens on the monitor that holds the
-captured region (or the pointer), sized for that monitor, instead of across
-the seam of a multi-monitor desktop.
+The region selector uses a thick, opaque amber border so it stays visible on
+light and dark wallpapers. The review window is a centred floating X11 dialog,
+so NIRUWM does not tile it. It opens on the monitor that holds the captured
+region (or the pointer), sized for that monitor.
 
-The dialog takes keyboard focus but holds **no keyboard or pointer grab**, so
+The window takes keyboard focus but holds **no keyboard or pointer grab**, so
 the screen lock (NIRULOCK, or any X locker) can always take over while a review
-is open; the review stays open underneath and its edits are kept. Only `slop`'s
+is open; the review stays open underneath and keeps its edits. Only `slop`'s
 short-lived region selection grabs input.
 
-Large captures stay smooth: the scaled view is cached, a drag preview is drawn
-over it without re-scaling, a finished annotation re-scales only the pixels it
-changed, and a new zoom is scaled quickly first and refined after a moment.
-The toolbar and typography follow the active NIRUX theme and configured
-monospace font. Keys follow the active layout, including Shift, AltGr, Caps
-Lock and Num Lock.
+## Configuration
 
-Saved files use a NIRU notification with Open, Copy and Show in folder when the
-installed `notify-send` supports actions; otherwise a plain notification is
-shown. `--no-notify` suppresses it. NIRUSHOT does not start a notification
-service.
+NIRUSHOT has no configuration file of its own. It follows the active NIRUX
+theme and monospace font. The capture sound is switched in
+`~/.config/nirux/sounds.toml` (`nirux sounds toggle screenshot`), and key
+bindings live in the NIRUWM configuration.
 
-When NIRUNOTIFY runs, the capture plays the NIRUX `screenshot` sound: one line
-on NIRUNOTIFY's control socket, no process and no new dependency. Switch it in
-`~/.config/nirux/sounds.toml` (`nirux sounds toggle screenshot`).
+## Files and paths
 
-## Runtime
+| Path | Purpose |
+|---|---|
+| `~/.local/bin/nirushot` | The program |
+| `~/Pictures/Screenshot-*.png` | Default save location |
+| Private temporary directory (`nirushot-*`) | The capture while it is reviewed; removed on exit |
 
-- `maim` capture
-- `slop` region selection
-- `xprop` active-window lookup
-- `xclip` clipboard
-- `notify-send` optional notification
-- `xdg-open` notification actions
+## Troubleshooting
 
-NIRUX installs all of these.
+- **No notification actions:** the installed `notify-send` does not support
+  `--action`; a plain notification is shown instead.
+- **No sound:** the sound comes from NIRUNOTIFY; check that it runs and that
+  `screenshot` is on in `nirux sounds status`.
+- **Region selection does nothing:** check that `slop` is installed; pressing
+  `Escape` in the selector cancels without a capture.
 
-## Build
+## Uninstall
+
+With NIRUX, NIRUSHOT is removed by `nirux uninstall`. A standalone copy:
+
+```sh
+./install.sh --uninstall
+```
+
+## Building from source
 
 ```sh
 cargo test --locked
@@ -108,11 +176,40 @@ cargo build --release --locked
 sh tests/cli-smoke.sh target/release/nirushot
 ```
 
-The smoke test uses fake capture and notification providers and does not need a
-graphical session.
+The smoke test uses fake capture and notification providers and needs no
+graphical session. CI also runs clippy with `-D warnings`, shellcheck and an
+Xvfb review test (`cargo test --release --locked --test xvfb -- --ignored`).
 
-MIT. Copyright 2026 Nicklas Rudolfsson.
+## Status, disclaimer and how it's made
 
-## NIRUX suite
+**Status: beta.** I use it for every screenshot I take; the annotation tools
+are deliberately few.
 
-[NIRUX](https://github.com/nirucon/nirux) · [NIRUWM](https://github.com/nirucon/niruwm) · [NIRUBAR](https://github.com/nirucon/nirubar) · [NIRUSCREENSAVER](https://github.com/nirucon/niruscreensaver) · [NIRULOCK](https://github.com/nirucon/nirulock) · [NIRULAUNCHER](https://github.com/nirucon/nirulauncher) · [NIRUNOTIFY](https://github.com/nirucon/nirunotify) · [NIRUSHOT](https://github.com/nirucon/nirushot)
+NIRUX and every niru* project are made by me, Nicklas Rudolfsson
+([@nirucon](https://github.com/nirucon)), for me. They are tailored to my own
+needs, preferences and workflows, on my own machines. If they fit yours too,
+that's a nice bonus.
+
+- **Free and open source.** Anyone is free to use, study, change and share
+  it under the [MIT License](LICENSE).
+- **No guarantees.** There is no warranty of any kind. Use it at your own
+  risk, read what you install and keep backups of anything that matters.
+- **How it's made.** Some of these projects I built from scratch by hand. In
+  more recent releases I have used Claude, Anthropic's AI, to do much of the
+  heavy lifting under my direction: I decide what to build and how it should
+  behave, and I test it on my own machines. It saves me a lot of time, and
+  the result is quite OK.
+- **Alpha, beta, dev, and maybe forever.** Most things here are alpha, beta
+  or dev, and may stay that way. Maybe one day there will be a real stable
+  release, but given how fast development moves, and how I am as a person,
+  maybe never :)
+
+| Label | Meaning |
+|---|---|
+| dev | Under active construction; may not build, install or work yet. |
+| alpha | Works on my machines, but incomplete or rough; expect breaking changes. |
+| beta | In daily use on my machines and mostly complete; rough edges remain. |
+
+## License
+
+MIT License, see [LICENSE](LICENSE). Copyright (c) 2026 Nicklas Rudolfsson.
