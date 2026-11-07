@@ -27,7 +27,9 @@ you are done.
 - Six colours (theme focus colour, red, yellow, green, white, black) and
   thin/medium/thick strokes; S/M/L text sizes in the theme font.
 - Zoom and pan that stay smooth on large captures.
-- Save, copy or share with [NIRUSHARE](https://github.com/nirucon/nirushare).
+- Save, copy or share with [NIRUSHARE](https://github.com/nirucon/nirushare):
+  to your own devices, or to a Discord channel through a webhook you set up
+  (NIRUSHARE 0.4.0 and NIRU Launcher 0.4.0), always after a preview.
 - Notification with Open, Copy and Show in folder actions after saving.
 - Plays the NIRUX `screenshot` sound through NIRUNOTIFY when it runs.
 - Follows the active NIRUX theme and configured monospace font; keys follow
@@ -106,7 +108,7 @@ Default NIRUWM bindings:
 | `Delete` | Remove the last annotation (undoable) |
 | `s`, `Ctrl+S` or `Enter` | Save to `~/Pictures/Screenshot-YYYY-MM-DD_HH-MM-SS.png` and copy |
 | `y` or `Ctrl+C` | Copy without saving |
-| `u` | Share with NIRUSHARE |
+| `u` | Share with NIRUSHARE: opens the launcher's Share view with this screenshot (devices, and Discord webhooks with a preview first) |
 | `Escape` or the close button | Discard (`Escape` first cancels a drag in progress) |
 
 If a file with the default name already exists, `-2`, `-3` and so on are
