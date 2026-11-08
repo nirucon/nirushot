@@ -1,6 +1,7 @@
 mod edit;
 mod keys;
 mod monitor;
+mod pick;
 mod review;
 mod sound;
 mod view;
@@ -303,13 +304,35 @@ fn atomic_save(image: &RgbaImage, path: &Path) -> Result<(), String> {
 
 fn copy_to_clipboard(path: &Path) -> Result<(), String> {
     let input = File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
-    let mut child = Command::new("xclip")
+    let child = Command::new("xclip")
         .args(["-selection", "clipboard", "-t", "image/png", "-i"])
         .stdin(Stdio::from(input))
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("cannot start xclip: {e}"))?;
+    wait_for_xclip(child)
+}
+
+/// Put `text` on the clipboard as UTF-8 text.
+fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
+    let mut child = Command::new("xclip")
+        .args(["-selection", "clipboard", "-i"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("cannot start xclip: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        stdin
+            .write_all(text.as_bytes())
+            .map_err(|e| format!("write to xclip: {e}"))?;
+    }
+    wait_for_xclip(child)
+}
+
+fn wait_for_xclip(mut child: std::process::Child) -> Result<(), String> {
     // xclip usually stays alive while it owns the selection, so waiting for it
     // to exit would hang the screenshot. Give it a short window: an immediate
     // unsuccessful exit is a real failure, while a process still running after
@@ -342,6 +365,9 @@ fn copy_to_clipboard(path: &Path) -> Result<(), String> {
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("pick") {
+        std::process::exit(pick::main(&args[1..]));
+    }
     if let Some(index) = args.iter().position(|a| a == "--notify-result") {
         if let Some(path) = args.get(index + 1) {
             notify_and_handle(Path::new(path), args.iter().any(|a| a == "--copied"));
@@ -354,6 +380,7 @@ fn main() {
     }
     if args.iter().any(|a| a == "--help") {
         println!("Usage: nirushot [--region|--window|--full] [--delay SECONDS] [--copy|--save PATH] [--review] [--no-notify]");
+        println!("       {}", pick::usage());
         return;
     }
     let fail = |message: &str| -> ! {

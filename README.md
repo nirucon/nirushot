@@ -1,6 +1,7 @@
 # NIRUSHOT
 
-On-demand screenshot capture, review and annotation for the NIRUX X11 desktop.
+On-demand screenshot capture, review and annotation, and a screen colour
+picker, for the NIRUX X11 desktop.
 
 **Status: beta** · Part of the [NIRUX](https://github.com/nirucon/nirux) suite · [MIT License](LICENSE)
 
@@ -10,7 +11,8 @@ On-demand screenshot capture, review and annotation for the NIRUX X11 desktop.
 
 NIRUSHOT takes a screenshot of a region, a window or the whole screen, puts it
 on the clipboard straight away and opens a small review window where you can
-crop, annotate, mask and share it before saving. There is no daemon, upload
+crop, annotate, mask and share it before saving. `nirushot pick` freezes the
+screen and picks a colour from it with a magnifying loupe. There is no daemon, upload
 service or background process: it runs when you press the key and exits when
 you are done.
 
@@ -31,6 +33,10 @@ you are done.
   to your own devices, or to a Discord channel through a webhook you set up
   (NIRUSHARE 0.4.0 and NIRU Launcher 0.4.0), always after a preview.
 - Notification with Open, Copy and Show in folder actions after saving.
+- Colour picker (`nirushot pick`): freezes every monitor, shows an 11×11 px
+  loupe magnified 10× with a crosshair, moves by pixel from the keyboard,
+  copies `#rrggbb`, `rgb()` or `hsl()`, and keeps the last ten picks for the
+  NIRU Launcher colours view.
 - Plays the NIRUX `screenshot` sound through NIRUNOTIFY when it runs.
 - Follows the active NIRUX theme and configured monospace font; keys follow
   the active keyboard layout (Shift, AltGr, Caps Lock, Num Lock).
@@ -73,6 +79,8 @@ nirushot --region --save ~/Pictures/shot.png
 nirushot --full --copy                    # clipboard only, no review
 nirushot --full --save shot.png --review  # save to that path from the review
 nirushot --no-notify                      # no notification after saving
+nirushot pick                             # pick a colour from the screen
+nirushot pick --format hsl                # start in hsl() instead of #rrggbb
 ```
 
 Without `--copy` or `--save` the capture opens in review. `--save PATH` writes
@@ -86,6 +94,7 @@ Default NIRUWM bindings:
 | `Print` | `nirushot --region` |
 | `Super+Print` | `nirushot --full` |
 | `Super+Shift+Print` | `nirushot --window` |
+| `Super+Ctrl+C` | `nirushot pick` |
 
 ### Review controls
 
@@ -138,6 +147,37 @@ the screen lock (NIRULOCK, or any X locker) can always take over while a review
 is open; the review stays open underneath and keeps its edits. Only `slop`'s
 short-lived region selection grabs input.
 
+### Colour picker
+
+`nirushot pick` freezes the screen the moment it starts: what you see while
+picking is a still frame of every monitor, so menus, tooltips and video hold
+still. A loupe next to the pointer shows the 11×11 pixels around it at 10×,
+with a crosshair on the pixel that will be picked and its value below.
+
+| Key | Action |
+|---|---|
+| Move the mouse | Move the crosshair |
+| Arrow keys | Move one pixel |
+| `Shift`+arrow keys | Move ten pixels |
+| `Tab` / `Shift+Tab` | Cycle the format: `#rrggbb`, `rgb(r, g, b)`, `hsl(h, s%, l%)` |
+| Left click, `Enter` or `Space` | Pick |
+| `Escape` or right click | Cancel |
+
+The picked value, in the format shown, is printed, copied to the clipboard and
+shown in a notification (with a swatch image where the notification daemon
+shows images; NIRUNOTIFY shows the text). The colour is added, as hex, to the
+history in `~/.local/state/nirushot/colors.json`, which NIRU Launcher shows as
+its colours view.
+
+Options: `--format hex|rgb|hsl` (the starting format), `--no-copy`,
+`--no-notify` and `--no-history`. The exit status is 0 after a pick, 1 when
+cancelled and 2 on an error.
+
+While it is open the picker grabs the keyboard and pointer, like the region
+selector. It never opens over a screen lock (it exits if it cannot grab), and
+it cancels itself after 60 seconds without input, so it cannot keep the idle
+lock out.
+
 ## Configuration
 
 NIRUSHOT has no configuration file of its own. It follows the active NIRUX
@@ -152,6 +192,8 @@ bindings live in the NIRUWM configuration.
 | `~/.local/bin/nirushot` | The program |
 | `~/Pictures/Screenshot-*.png` | Default save location |
 | Private temporary directory (`nirushot-*`) | The capture while it is reviewed; removed on exit |
+| `~/.local/state/nirushot/colors.json` | The last ten picked colours, newest first |
+| `~/.cache/nirushot/swatch-*.png` | Swatch images for pick notifications (only colours still in the history) |
 
 ## Troubleshooting
 
@@ -159,6 +201,9 @@ bindings live in the NIRUWM configuration.
   `--action`; a plain notification is shown instead.
 - **No sound:** the sound comes from NIRUNOTIFY; check that it runs and that
   `screenshot` is on in `nirux sounds status`.
+- **`nirushot pick` exits with "cannot grab":** another program (a screen
+  lock, or a menu that holds the keyboard) has the input; close it and try
+  again.
 - **Region selection does nothing:** check that `slop` is installed; pressing
   `Escape` in the selector cancels without a capture.
 

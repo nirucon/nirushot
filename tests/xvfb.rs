@@ -67,6 +67,9 @@ fn start_xvfb(width: u32, height: u32) -> Xvfb {
                 &format!("{width}x{height}x24"),
                 "-nolisten",
                 "tcp",
+                // Without it the server resets when the readiness probe
+                // disconnects, and a client connecting then is refused.
+                "-noreset",
             ])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -512,4 +515,305 @@ fn e3_standard_shortcuts() {
         r.xdotool(&["keyup".into(), "space".into()]);
     });
     assert!(panned == original, "a space-drag drew nothing");
+}
+
+// ---------------------------------------------------------------------------
+// `nirushot pick`
+
+/// Paints known colours on the screen and keeps them up while alive.
+struct Painting {
+    c: x11rb::rust_connection::RustConnection,
+    windows: Vec<u32>,
+}
+
+impl Painting {
+    /// Windows as (x, y, w, h, colour).
+    fn new(display: &str, parts: &[(i16, i16, u16, u16, u32)]) -> Self {
+        use x11rb::{
+            protocol::xproto::{CreateWindowAux, WindowClass},
+            wrapper::ConnectionExt as _,
+        };
+        let (c, screen) =
+            x11rb::connect(Some(display)).unwrap_or_else(|e| panic!("connect {display}: {e:?}"));
+        let root = c.setup().roots[screen].root;
+        let mut windows = Vec::new();
+        for &(x, y, w, h, colour) in parts {
+            let win = c.generate_id().unwrap();
+            c.create_window(
+                x11rb::COPY_DEPTH_FROM_PARENT,
+                win,
+                root,
+                x,
+                y,
+                w,
+                h,
+                0,
+                WindowClass::INPUT_OUTPUT,
+                x11rb::COPY_FROM_PARENT,
+                &CreateWindowAux::new()
+                    .background_pixel(colour)
+                    .override_redirect(1),
+            )
+            .unwrap();
+            c.map_window(win).unwrap();
+            windows.push(win);
+        }
+        c.sync().unwrap();
+        thread::sleep(Duration::from_millis(200));
+        Self { c, windows }
+    }
+
+    /// Take everything down, so only a frozen frame still shows it.
+    fn clear(&self) {
+        use x11rb::wrapper::ConnectionExt as _;
+        for win in &self.windows {
+            self.c.unmap_window(*win).unwrap();
+        }
+        self.c.sync().unwrap();
+    }
+}
+
+struct Pick {
+    child: Child,
+    display: String,
+    fixture: Fixture,
+}
+
+fn xdo(display: &str, args: &[&str]) {
+    let status = Command::new("xdotool")
+        .args(args)
+        .env("DISPLAY", display)
+        .status()
+        .unwrap();
+    assert!(status.success(), "xdotool {args:?}");
+}
+
+fn pick_fixture() -> Fixture {
+    let fixture = Fixture::new(4, 4);
+    let bin = fixture.path("bin");
+    let write = |name: &str, body: &str| {
+        let path = bin.join(name);
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        Command::new("chmod").arg("+x").arg(&path).status().unwrap();
+    };
+    write(
+        "xclip",
+        "echo \"$*\" > \"$NIRUSHOT_FIXTURE/xclip.args\"\ncat > \"$NIRUSHOT_FIXTURE/clip.txt\"",
+    );
+    write(
+        "notify-send",
+        "printf '%s\\n' \"$@\" > \"$NIRUSHOT_FIXTURE/notify.args\"",
+    );
+    fixture
+}
+
+/// Start `nirushot pick` and wait for its overlay.
+fn start_pick(x: &Xvfb, fixture: Fixture, extra: &[&str]) -> Pick {
+    let path = format!(
+        "{}:{}",
+        fixture.path("bin").display(),
+        env::var("PATH").unwrap_or_default()
+    );
+    let child = Command::new(binary())
+        .arg("pick")
+        .args(extra)
+        .env("DISPLAY", &x.display)
+        .env("PATH", path)
+        .env("HOME", fixture.path("home"))
+        .env("XDG_CONFIG_HOME", fixture.path("home/.config"))
+        .env("XDG_CACHE_HOME", fixture.path("home/.cache"))
+        .env("NIRUSHOT_FIXTURE", fixture.dir.path())
+        .env("NIRUSHOT_TIMING", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start nirushot pick");
+    let pick = Pick {
+        child,
+        display: x.display.clone(),
+        fixture,
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let found = Command::new("xdotool")
+            .args(["search", "--onlyvisible", "--classname", "^nirushot-pick$"])
+            .env("DISPLAY", &x.display)
+            .output()
+            .unwrap();
+        if !found.stdout.is_empty() {
+            thread::sleep(Duration::from_millis(150));
+            return pick;
+        }
+        assert!(Instant::now() < deadline, "the picker did not appear");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+impl Pick {
+    fn key(&self, key: &str) {
+        xdo(&self.display, &["key", "--delay", "40", key]);
+        thread::sleep(Duration::from_millis(60));
+    }
+
+    /// Exit code, stdout and stderr.
+    fn finish(mut self) -> (i32, String, String, Fixture) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Ok(Some(_)) = self.child.try_wait() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the picker did not exit");
+            thread::sleep(Duration::from_millis(20));
+        }
+        let out = self.child.wait_with_output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        eprint!("{stderr}");
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            stderr,
+            self.fixture,
+        )
+    }
+}
+
+fn history(fixture: &Fixture) -> String {
+    fs::read_to_string(fixture.path("home/.local/state/nirushot/colors.json")).unwrap_or_default()
+}
+
+#[test]
+#[ignore = "needs Xvfb and xdotool"]
+fn pick_freezes_moves_by_key_cycles_formats_and_records() {
+    let x = start_xvfb(1280, 800);
+    let paint = Painting::new(
+        &x.display,
+        &[
+            (0, 0, 640, 800, 0x1a2b3c),
+            (101, 100, 1, 1, 0xff0080),
+            (110, 100, 1, 1, 0x00ff00),
+        ],
+    );
+    xdo(&x.display, &["mousemove", "100", "100"]);
+    let pick = start_pick(&x, pick_fixture(), &[]);
+    // The live screen changes; the picker keeps showing the frozen frame.
+    paint.clear();
+    pick.key("Right");
+    pick.key("Tab");
+    pick.key("Tab");
+    pick.key("Return");
+    let (code, out, stderr, fixture) = pick.finish();
+    assert_eq!(code, 0);
+    assert_eq!(out, "hsl(330, 100%, 50%)");
+    assert!(stderr.contains("window mapped"), "timing line: {stderr}");
+    assert_eq!(
+        fs::read_to_string(fixture.path("clip.txt")).unwrap(),
+        "hsl(330, 100%, 50%)"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.path("xclip.args"))
+            .unwrap()
+            .trim(),
+        "-selection clipboard -i"
+    );
+    let notified = fs::read_to_string(fixture.path("notify.args")).unwrap();
+    assert!(notified.contains("Colour #ff0080"), "{notified}");
+    assert!(notified.contains("string:image-path:"), "{notified}");
+    assert!(notified.contains("swatch-ff0080.png"), "{notified}");
+    let first = history(&fixture);
+    assert!(
+        first.starts_with("[\n  {\"hex\":\"#ff0080\",\"time\":"),
+        "{first}"
+    );
+
+    // Shift+Right moves ten pixels, Left one back, a click picks; the
+    // history keeps the newest first. Same home, so the history carries on.
+    let paint = Painting::new(
+        &x.display,
+        &[(100, 100, 1, 1, 0xffffff), (109, 100, 1, 1, 0x00ff00)],
+    );
+    xdo(&x.display, &["mousemove", "100", "100"]);
+    let pick = start_pick(&x, fixture, &[]);
+    pick.key("shift+Right");
+    pick.key("Left");
+    // A click picks where the pointer is: where the keys put it.
+    xdo(&pick.display, &["click", "1"]);
+    let (code, out, _, fixture) = pick.finish();
+    drop(paint);
+    assert_eq!(code, 0);
+    assert_eq!(out, "#00ff00");
+    let text = history(&fixture);
+    let hexes: Vec<&str> = text
+        .match_indices("\"hex\":\"")
+        .map(|(i, _)| &text[i + 7..i + 14])
+        .collect();
+    assert_eq!(hexes, ["#00ff00", "#ff0080"], "{text}");
+}
+
+#[test]
+#[ignore = "needs Xvfb and xdotool"]
+fn pick_escape_cancels_without_side_effects() {
+    let x = start_xvfb(800, 600);
+    let pick = start_pick(&x, pick_fixture(), &[]);
+    pick.key("Tab");
+    pick.key("Escape");
+    let (code, out, _, fixture) = pick.finish();
+    assert_eq!(code, 1);
+    assert!(out.is_empty());
+    assert!(!fixture.path("clip.txt").exists());
+    assert!(!fixture.path("notify.args").exists());
+    assert!(history(&fixture).is_empty());
+    // The grab is gone: another client can take it right away.
+    let (c, screen) = x11rb::connect(Some(&x.display)).unwrap();
+    let root = c.setup().roots[screen].root;
+    let status = c
+        .grab_keyboard(
+            false,
+            root,
+            x11rb::CURRENT_TIME,
+            GrabMode::ASYNC,
+            GrabMode::ASYNC,
+        )
+        .unwrap()
+        .reply()
+        .unwrap()
+        .status;
+    assert_eq!(status, GrabStatus::SUCCESS);
+}
+
+#[test]
+#[ignore = "needs Xvfb and xdotool"]
+fn pick_never_opens_over_a_locker() {
+    let x = start_xvfb(800, 600);
+    let (c, screen) = x11rb::connect(Some(&x.display)).unwrap();
+    let root = c.setup().roots[screen].root;
+    let status = c
+        .grab_keyboard(
+            false,
+            root,
+            x11rb::CURRENT_TIME,
+            GrabMode::ASYNC,
+            GrabMode::ASYNC,
+        )
+        .unwrap()
+        .reply()
+        .unwrap()
+        .status;
+    assert_eq!(status, GrabStatus::SUCCESS);
+    let fixture = pick_fixture();
+    let started = Instant::now();
+    let out = Command::new(binary())
+        .arg("pick")
+        .env("DISPLAY", &x.display)
+        .env("HOME", fixture.path("home"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot grab"));
+    assert!(started.elapsed() < Duration::from_secs(5));
+    let found = Command::new("xdotool")
+        .args(["search", "--classname", "^nirushot-pick$"])
+        .env("DISPLAY", &x.display)
+        .output()
+        .unwrap();
+    assert!(found.stdout.is_empty(), "no overlay was created");
 }

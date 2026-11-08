@@ -37,9 +37,18 @@ cat > "$T/bin/notify-send" <<'EOF'
 printf '1\n' > "$NIRUSHOT_FIXTURE/notified"
 EOF
 chmod +x "$T/bin/"*
-"$BIN" --version | grep -q "NIRUSHOT 0.5.1"
+"$BIN" --version | grep -q "NIRUSHOT 0.6.0"
 if "$BIN" --delay nope >/dev/null 2>&1; then echo 'FAIL invalid delay accepted' >&2; exit 1; fi
 if "$BIN" --save >/dev/null 2>&1; then echo 'FAIL missing save path accepted' >&2; exit 1; fi
+# The colour picker parses its options before it touches the display.
+"$BIN" pick --help | grep -q 'nirushot pick'
+set +e
+"$BIN" pick --format cmyk >/dev/null 2>&1; rc=$?
+env -u DISPLAY "$BIN" pick --no-notify >/dev/null 2>"$T/pick.err"; rc2=$?
+set -e
+[ "$rc" = 2 ] || { echo "FAIL pick accepted an unknown format (rc=$rc)" >&2; exit 1; }
+[ "$rc2" = 2 ] && grep -q 'cannot open the display' "$T/pick.err" || { echo "FAIL pick without a display (rc=$rc2)" >&2; exit 1; }
+[ ! -e "$HOME/.local/state/nirushot/colors.json" ] || { echo 'FAIL failed pick wrote history' >&2; exit 1; }
 "$BIN" --region --save "$T/region.png" > "$T/out"
 grep -q -- "-b 4 -c 1.0,0.72,0.15,1.0" "$T/slop"
 grep -q -- "--quiet -g 100x50+20+30 " "$T/maim"
@@ -93,4 +102,4 @@ for _ in $(seq 1 100); do [ -S "$SOCK" ] && break; sleep .02; done
 "$BIN" --full --copy --no-notify >/dev/null
 wait
 grep -qxF 'sound screenshot' "$T/sound" || { echo 'FAIL no shutter sound request' >&2; exit 1; }
-echo 'PASS: region/full capture, save, clipboard, failed-copy detection, cleanup, notification and shutter sound'
+echo 'PASS: pick options, region/full capture, save, clipboard, failed-copy detection, cleanup, notification and shutter sound'
