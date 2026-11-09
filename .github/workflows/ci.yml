@@ -25,6 +25,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get update && sudo apt-get install -y xvfb xdotool fonts-dejavu-core
+      - run: sudo apt-get update && sudo apt-get install -y xvfb xdotool fonts-dejavu-core slop xclip tesseract-ocr tesseract-ocr-eng tesseract-ocr-swe
+      # OCR fixtures: rendered English and Swedish text read back by tesseract.
+      - run: cargo test --release --locked --bin nirushot ocr -- --ignored --nocapture
       # Release mode: the H2 CPU budget is about the shipped binary.
       - run: cargo test --release --locked --test xvfb -- --ignored --test-threads 1 --nocapture

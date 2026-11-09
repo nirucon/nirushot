@@ -1,6 +1,7 @@
 mod edit;
 mod keys;
 mod monitor;
+mod ocr;
 mod pick;
 mod review;
 mod sound;
@@ -368,6 +369,9 @@ fn main() {
     if args.first().map(String::as_str) == Some("pick") {
         std::process::exit(pick::main(&args[1..]));
     }
+    if args.first().map(String::as_str) == Some("ocr") {
+        std::process::exit(ocr::main(&args[1..]));
+    }
     if let Some(index) = args.iter().position(|a| a == "--notify-result") {
         if let Some(path) = args.get(index + 1) {
             notify_and_handle(Path::new(path), args.iter().any(|a| a == "--copied"));
@@ -381,6 +385,7 @@ fn main() {
     if args.iter().any(|a| a == "--help") {
         println!("Usage: nirushot [--region|--window|--full] [--delay SECONDS] [--copy|--save PATH] [--review] [--no-notify]");
         println!("       {}", pick::usage());
+        println!("       {}", ocr::usage());
         return;
     }
     let fail = |message: &str| -> ! {
@@ -453,6 +458,11 @@ fn main() {
             ) {
                 Ok(g) if !g.is_empty() => g,
                 Ok(_) => {
+                    println!("cancelled");
+                    return;
+                }
+                // Escape or a right click in slop is a cancel, not an error.
+                Err(e) if ocr::slop_cancelled(&e) => {
                     println!("cancelled");
                     return;
                 }

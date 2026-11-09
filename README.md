@@ -1,7 +1,7 @@
 # NIRUSHOT
 
-On-demand screenshot capture, review and annotation, and a screen colour
-picker, for the NIRUX X11 desktop.
+On-demand screenshot capture, review and annotation, a screen colour picker
+and copying text from the screen (OCR), for the NIRUX X11 desktop.
 
 **Status: beta** · Part of the [NIRUX](https://github.com/nirucon/nirux) suite · [MIT License](LICENSE)
 
@@ -12,7 +12,8 @@ picker, for the NIRUX X11 desktop.
 NIRUSHOT takes a screenshot of a region, a window or the whole screen, puts it
 on the clipboard straight away and opens a small review window where you can
 crop, annotate, mask and share it before saving. `nirushot pick` freezes the
-screen and picks a colour from it with a magnifying loupe. There is no daemon, upload
+screen and picks a colour from it with a magnifying loupe, and `nirushot ocr`
+freezes it and copies the text in a region you select. There is no daemon, upload
 service or background process: it runs when you press the key and exits when
 you are done.
 
@@ -37,6 +38,10 @@ you are done.
   loupe magnified 10× with a crosshair, moves by pixel from the keyboard,
   copies `#rrggbb`, `rgb()` or `hsl()`, and keeps the last ten picks for the
   NIRU Launcher colours view.
+- Copy text from the screen (`nirushot ocr`): freeze, select a region and the
+  text is on the clipboard, read by `tesseract` in Swedish and English. The
+  notification shows the first line and offers Copy again and Undo. The review
+  window has the same thing as `o` (Copy text).
 - Plays the NIRUX `screenshot` sound through NIRUNOTIFY when it runs.
 - Follows the active NIRUX theme and configured monospace font; keys follow
   the active keyboard layout (Shift, AltGr, Caps Lock, Num Lock).
@@ -48,8 +53,16 @@ you are done.
   `xclip` (clipboard).
 - Optional: `notify-send` (notifications) and `xdg-open` (notification
   actions).
+- Optional, for `nirushot ocr`: `tesseract` with Swedish and English data.
 
-NIRUX installs all of these.
+| Distribution | Packages |
+|---|---|
+| Debian | `tesseract-ocr tesseract-ocr-swe tesseract-ocr-eng` |
+| Arch | `tesseract tesseract-data-swe tesseract-data-eng` |
+| Void | `tesseract-ocr tesseract-ocr-swe tesseract-ocr-eng` |
+
+NIRUX installs all of these except tesseract. Without it, `nirushot ocr`
+shows the install command for your distribution.
 
 ## Installation
 
@@ -81,6 +94,8 @@ nirushot --full --save shot.png --review  # save to that path from the review
 nirushot --no-notify                      # no notification after saving
 nirushot pick                             # pick a colour from the screen
 nirushot pick --format hsl                # start in hsl() instead of #rrggbb
+nirushot ocr                              # copy the text in a region
+nirushot ocr --check                      # is tesseract there, which languages
 ```
 
 Without `--copy` or `--save` the capture opens in review. `--save PATH` writes
@@ -96,6 +111,20 @@ Default NIRUWM bindings:
 | `Super+Shift+Print` | `nirushot --window` |
 | `Super+Ctrl+C` | `nirushot pick` |
 
+`nirushot ocr` has no default key yet. `Super+Ctrl+O` is free in NIRUWM's
+defaults and the NIRUX example config; add it to `~/.config/niruwm/config.toml`:
+
+```toml
+[[keys]]
+keys = "super+ctrl+o"
+action = "shell nirushot ocr"
+description = "Copy text from a screen region (OCR)"
+```
+
+NIRUWM grabs the key, so the cheat sheet (`Super+/`) lists it with that
+description. Nothing goes in `~/.local/share/niru/keys.d`, which is for
+programs that grab their own keys.
+
 ### Review controls
 
 | Key | Action |
@@ -106,7 +135,7 @@ Default NIRUWM bindings:
 | `m`, then drag | Opaque black mask |
 | `h`, then drag | Highlight (several highlights share one dimming; annotations are never dimmed) |
 | `t`, then click | Type one line of text; `Enter` places it, `Escape` cancels it |
-| `1`–`6` or the swatches | Colour for rectangles, arrows and text |
+| `1` to `6` or the swatches | Colour for rectangles, arrows and text |
 | `w` or the picker | Thin/medium/thick stroke (S/M/L size with the text tool) |
 | `v` | View/pan mode; drag the image |
 | Middle-drag, or hold `Space` and drag | Pan with any tool |
@@ -117,6 +146,7 @@ Default NIRUWM bindings:
 | `Delete` | Remove the last annotation (undoable) |
 | `s`, `Ctrl+S` or `Enter` | Save to `~/Pictures/Screenshot-YYYY-MM-DD_HH-MM-SS.png` and copy |
 | `y` or `Ctrl+C` | Copy without saving |
+| `o` or Copy text | Copy the text in the image as shown, after crops and masks (OCR); the review stays open |
 | `u` | Share with NIRUSHARE: opens the launcher's Share view with this screenshot (devices, and Discord webhooks with a preview first) |
 | `Escape` or the close button | Discard (`Escape` first cancels a drag in progress) |
 
@@ -178,10 +208,47 @@ selector. It never opens over a screen lock (it exits if it cannot grab), and
 it cancels itself after 60 seconds without input, so it cannot keep the idle
 lock out.
 
+### Copy text (OCR)
+
+`nirushot ocr` freezes the screen the way the colour picker does, then you
+drag over a region with the same amber selector as a region capture
+(`Escape` or a right click cancels). The region is turned grey, made
+dark text on a light background if the theme is dark, scaled up three times
+(less for very large regions) and read by `tesseract`. The text is printed,
+copied to the clipboard and shown in a notification with the first line and
+the character count. Where the notification daemon supports actions, **Copy
+again** puts the text back on the clipboard and **Undo** restores the text the
+clipboard held before.
+
+Languages default to `swe+eng`. If only some of the configured languages are
+installed, the rest are used and the notification (and `nirushot ocr --check`)
+names the missing data and the package to install. If none is installed,
+English or the first installed language is used.
+
+Options: `--languages swe+eng`, `--psm N` (tesseract's page segmentation, 0
+to 13), `--no-notify`, `--geometry WxH+X+Y` (a region without selecting, for
+scripts) and `--image FILE.png` (read a file, no screen). `--check` prints the
+tesseract version, the installed and chosen languages and what is missing.
+The exit status is 0 when text was copied, 1 when cancelled or no text was
+found (the clipboard is left alone) and 2 on an error, such as tesseract not
+installed.
+
+Nothing leaves the machine: the region is written to a private temporary
+directory for tesseract and removed straight after.
+
 ## Configuration
 
-NIRUSHOT has no configuration file of its own. It follows the active NIRUX
-theme and monospace font. The capture sound is switched in
+NIRUSHOT follows the active NIRUX theme and monospace font. The only file of
+its own is the optional `~/.config/nirushot/config.toml`, for OCR:
+
+```toml
+[ocr]
+languages = "swe+eng"   # tesseract language codes joined with +
+psm = 3                 # page segmentation; 6 suits one block, 7 one line
+keep_newlines = true    # false joins everything into one line
+```
+
+All keys are optional. The capture sound is switched in
 `~/.config/nirux/sounds.toml` (`nirux sounds toggle screenshot`), and key
 bindings live in the NIRUWM configuration.
 
@@ -193,6 +260,8 @@ bindings live in the NIRUWM configuration.
 | `~/Pictures/Screenshot-*.png` | Default save location |
 | Private temporary directory (`nirushot-*`) | The capture while it is reviewed; removed on exit |
 | `~/.local/state/nirushot/colors.json` | The last ten picked colours, newest first |
+| `~/.config/nirushot/config.toml` | Optional `[ocr]` settings |
+| Private temporary directory (`nirushot-ocr-*`) | The prepared OCR region while tesseract reads it |
 | `~/.cache/nirushot/swatch-*.png` | Swatch images for pick notifications (only colours still in the history) |
 
 ## Troubleshooting
@@ -204,6 +273,14 @@ bindings live in the NIRUWM configuration.
 - **`nirushot pick` exits with "cannot grab":** another program (a screen
   lock, or a menu that holds the keyboard) has the input; close it and try
   again.
+- **`nirushot ocr` says tesseract is not installed:** install the packages
+  in the table under Requirements, then check with `nirushot ocr --check`. On
+  Void the program is `tesseract-ocr` (Void's `tesseract` is a game), and
+  NIRUSHOT only runs that name there.
+- **OCR reads Swedish letters wrong:** `nirushot ocr --check` says whether
+  `swe` is installed; without it åäö come out as a, o or worse.
+- **OCR misses small or styled text:** select tighter around the text, or set
+  `psm = 6` (one block) or `psm = 7` (one line) in the config.
 - **Region selection does nothing:** check that `slop` is installed; pressing
   `Escape` in the selector cancels without a capture.
 
@@ -226,6 +303,10 @@ sh tests/cli-smoke.sh target/release/nirushot
 The smoke test uses fake capture and notification providers and needs no
 graphical session. CI also runs clippy with `-D warnings`, shellcheck and an
 Xvfb review test (`cargo test --release --locked --test xvfb -- --ignored`).
+The OCR fixtures (rendered English and Swedish text in three themes and three
+sizes, read back by the real tesseract) run with
+`cargo test --release --locked --bin nirushot ocr -- --ignored` and need
+`tesseract-ocr`, `tesseract-ocr-eng` and `tesseract-ocr-swe`.
 
 ## Status, disclaimer and how it's made
 

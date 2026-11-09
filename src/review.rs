@@ -24,7 +24,7 @@ use crate::{
     atomic_save, copy_to_clipboard, default_path, draw_text,
     edit::{fill_rect, op_from_drag, text_area, Change, Editor, Op, PALETTE, STROKES, TEXT_SIZES},
     keys::{self, keysym_char, Keymap},
-    load_font, load_theme, monitor, notify, rgb, text_width,
+    load_font, load_theme, monitor, notify, ocr, rgb, text_width,
     view::{
         draw_preview, intersect, next_event, preview_bounds, put_bytes, to_x_bytes, view_layout,
         view_rect, Area, Layout, Preview, RefineTimer, ViewCache, ViewKey, TOOLBAR,
@@ -48,6 +48,8 @@ enum Item {
     Size(usize),
     Colour(usize),
     Undo,
+    /// Copy the text in the image (OCR).
+    Ocr,
 }
 
 const TOOLS: [(u8, &str); 6] = [
@@ -58,6 +60,8 @@ const TOOLS: [(u8, &str); 6] = [
     (b't', "Text"),
     (b'h', "Highlight"),
 ];
+
+const OCR_LABEL: &str = "Copy text";
 
 const SIZE_LABELS: [&str; 3] = ["S", "M", "L"];
 const CELL: f32 = 22.0;
@@ -85,6 +89,9 @@ fn toolbar_items(font: &FontArc) -> Vec<(f32, f32, Item)> {
     pos += 12.0;
     let width = 28.0 + text_width(font, 12.0, "Undo");
     items.push((pos, width, Item::Undo));
+    pos += width + 8.0;
+    let width = 28.0 + text_width(font, 12.0, OCR_LABEL);
+    items.push((pos, width, Item::Ocr));
     items
 }
 
@@ -186,6 +193,18 @@ fn draw_toolbar(canvas: &mut RgbaImage, theme: &Theme, font: Option<&FontArc>, s
                 };
                 draw_text(canvas, font, 12.0, pos + 9.0, 20.0, "Undo", rgb(colour));
             }
+            Item::Ocr => {
+                outline(canvas, x, w, rgb(theme.border));
+                draw_text(
+                    canvas,
+                    font,
+                    12.0,
+                    pos + 9.0,
+                    20.0,
+                    OCR_LABEL,
+                    rgb(theme.foreground),
+                );
+            }
         }
         end = pos + width;
     }
@@ -203,7 +222,7 @@ fn draw_toolbar(canvas: &mut RgbaImage, theme: &Theme, font: Option<&FontArc>, s
         &zoom_label,
         rgb(theme.muted),
     );
-    let line1 = "s/^S save   y/^C copy   u share   del remove   esc close";
+    let line1 = "s/^S save   y/^C copy   o text   u share   del remove   esc close";
     let line2 = "^Z undo   1-6 colour   w width   space-drag pan   +/- 0 zoom";
     let hint_width = text_width(font, 11.0, line1).max(text_width(font, 11.0, line2));
     let hint_x = win_w as f32 - hint_width - 16.0;
@@ -833,6 +852,34 @@ impl Ui<'_> {
         Ok(Flow::Continue)
     }
 
+    /// Copy the text in the image as it is now (crops and masks applied),
+    /// with tesseract. The review stays open.
+    fn copy_text(&mut self) {
+        self.commit_text();
+        let config = ocr::load_config();
+        let setup = match ocr::setup(&config, None) {
+            Ok(setup) => setup,
+            Err(e) => {
+                eprintln!("nirushot: {e}");
+                if self.out.notify {
+                    let body = e.split_once('\n').map(|x| x.1).unwrap_or(&e);
+                    ocr::notify_plain("OCR needs tesseract", body);
+                }
+                return;
+            }
+        };
+        match ocr::copy_text_from(self.editor.image(), &setup, &config, None, self.out.notify) {
+            Ok(Some(text)) => println!("{text}"),
+            Ok(None) => eprintln!("nirushot: no text found"),
+            Err(e) => {
+                eprintln!("nirushot: {e}");
+                if self.out.notify {
+                    ocr::notify_plain("OCR failed", &e);
+                }
+            }
+        }
+    }
+
     fn share(&mut self) -> Result<Flow, String> {
         self.commit_text();
         let state = env::var_os("XDG_STATE_HOME")
@@ -948,6 +995,7 @@ impl Ui<'_> {
                     self.commit_text();
                     self.undo();
                 }
+                Some(Item::Ocr) => self.copy_text(),
                 None => {}
             }
             return;
@@ -1078,6 +1126,7 @@ impl Ui<'_> {
             0x73 | 0xff0d => return self.save(),
             0x79 => return self.copy(),
             0x75 => return self.share(),
+            0x6f => self.copy_text(),
             _ => {}
         }
         Ok(Flow::Continue)

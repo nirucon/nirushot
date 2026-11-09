@@ -3,6 +3,48 @@
 All notable changes to NIRUSHOT. Releases before 0.6.0 are described in
 their GitHub release notes.
 
+## 0.7.0 (2026-11-09)
+
+### Added
+
+- `nirushot ocr`: copy the text in a screen region.
+  - The screen is frozen like `nirushot pick` (one server-side copy of every
+    monitor), and the region is selected with the same `slop` selector as a
+    region capture. The pixels come from the frozen frame.
+  - The region is converted to grey, inverted when the background is dark,
+    scaled up three times (less for regions over 24 MP after scaling) and
+    padded, then read by `tesseract`. On the fixtures this took character
+    accuracy from 98.3 % (unprocessed) to 100 %.
+  - The text is printed and copied to the clipboard with `xclip`, like
+    `pick`. The notification shows the first line and the character count,
+    with **Copy again** and **Undo** (restore the previous clipboard text)
+    where the daemon supports actions.
+  - Languages default to `swe+eng`, using whichever of them is installed; the
+    notification and `nirushot ocr --check` name the missing data and its
+    package.
+  - tesseract is optional. Without it `nirushot ocr` notifies with the install
+    command for Debian, Arch or Void, detected the way `nirux` does. On Void
+    only `tesseract-ocr` is run, because Void's `tesseract` is a game.
+  - Options: `--check`, `--languages`, `--psm`, `--geometry WxH+X+Y`,
+    `--image FILE`, `--no-notify`. Exit status 0 copied, 1 cancelled or no
+    text (clipboard unchanged), 2 error.
+  - Optional `~/.config/nirushot/config.toml` with `[ocr]` `languages`,
+    `psm` and `keep_newlines`.
+- Review window: `o` or the **Copy text** button copies the text of the image
+  as shown, after crops and masks. The review stays open.
+- Tests: unit tests for the config, languages, distro detection, install
+  hints, text cleanup and preparation; OCR fixtures of rendered English and
+  Swedish text (åäö) in three themes and three sizes, read back by the real
+  tesseract; Xvfb tests for selecting a frozen region with `slop`, Undo and
+  Copy again, an empty region, Escape, and the review's `o`; smoke tests
+  with a fake tesseract. CI installs tesseract with Swedish and English data.
+
+### Fixed
+
+- Escape or a right click in the region selector is a cancel (exit 0 with
+  `cancelled`), not "selection failed".
+- `install.sh` installs the current release (it still pointed at 0.5.1).
+
 ## 0.6.0 (2026-11-08)
 
 ### Added
