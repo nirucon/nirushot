@@ -137,6 +137,8 @@ printf 'Hello\n\nworld' | cmp -s - "$T/clip.txt" || { echo 'FAIL ocr clipboard' 
 grep -qxF -- "-selection clipboard -i" "$T/xclip"
 grep -q -- '-l eng --dpi 288' "$T/tesseract.args" || { cat "$T/tesseract.args" >&2; echo 'FAIL tesseract arguments' >&2; exit 1; }
 grep -q 'Missing language data: swe' "$T/ocr.err" || { echo 'FAIL missing language not named' >&2; exit 1; }
+# The runner may set XDG_CONFIG_HOME; the config must come from this home.
+export XDG_CONFIG_HOME="$HOME/.config"
 mkdir -p "$HOME/.config/nirushot"
 printf '[ocr]\nlanguages = "eng"\npsm = 6\nkeep_newlines = false\n' > "$HOME/.config/nirushot/config.toml"
 "$BIN" ocr --image "$T/ocr.png" --no-notify > "$T/ocr.out" 2>"$T/ocr.err"
