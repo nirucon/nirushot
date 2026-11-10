@@ -61,8 +61,9 @@ you are done.
 | Arch | `tesseract tesseract-data-swe tesseract-data-eng` |
 | Void | `tesseract-ocr tesseract-ocr-swe tesseract-ocr-eng` |
 
-NIRUX installs all of these except tesseract. Without it, `nirushot ocr`
-shows the install command for your distribution.
+NIRUX installs all of these, including tesseract with Swedish and English
+data (since NIRUX 0.12.245). Without tesseract, `nirushot ocr` shows the
+install command for your distribution.
 
 ## Installation
 
@@ -110,20 +111,10 @@ Default NIRUWM bindings:
 | `Super+Print` | `nirushot --full` |
 | `Super+Shift+Print` | `nirushot --window` |
 | `Super+Ctrl+C` | `nirushot pick` |
+| `Super+Ctrl+O` | `nirushot ocr` |
 
-`nirushot ocr` has no default key yet. `Super+Ctrl+O` is free in NIRUWM's
-defaults and the NIRUX example config; add it to `~/.config/niruwm/config.toml`:
-
-```toml
-[[keys]]
-keys = "super+ctrl+o"
-action = "shell nirushot ocr"
-description = "Copy text from a screen region (OCR)"
-```
-
-NIRUWM grabs the key, so the cheat sheet (`Super+/`) lists it with that
-description. Nothing goes in `~/.local/share/niru/keys.d`, which is for
-programs that grab their own keys.
+In NIRUX, `nirux manual screenshots` covers capture, review, the colour
+picker and OCR.
 
 ### Review controls
 
